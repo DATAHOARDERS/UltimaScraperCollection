@@ -701,7 +701,7 @@ websockets = ">=10.4,<11.0"
 
 [[package]]
 name = "ultima-scraper-renamer"
-version = "0.0.5"
+version = "0.0.6"
 description = ""
 category = "main"
 optional = false
@@ -710,7 +710,8 @@ python-versions = ">=3.10,<4.0"
 [package.dependencies]
 orjson = ">=3.8.3,<4.0.0"
 tqdm = ">=4.64.1,<5.0.0"
-ultima-scraper-api = ">=0.0.2.0,<0.0.3.0"
+ultima-scraper-api = "0.0.2.4"
+ultima-scraper-collection = "0.0.0.1"
 
 [[package]]
 name = "unidecode"
@@ -775,7 +776,7 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.10"
-content-hash = "134422521e2b5e2ccf19408153e65261c45bfd8d93d7eb3931c561dcc620e3fb"
+content-hash = "5e24c2ab94c37ea48dc9e91348c8f3aef902f1a2b7657d26f2886ca64d0058d5"
 
 [metadata.files]
 aiofiles = [
@@ -1683,8 +1684,8 @@ ultima-scraper-api = [
     {file = "ultima_scraper_api-0.0.2.4.tar.gz", hash = "sha256:af6286aaffeb1146f26981ac682aab01e37e37f9f7c43b3c56c237467adb8155"},
 ]
 ultima-scraper-renamer = [
-    {file = "ultima_scraper_renamer-0.0.5-py3-none-any.whl", hash = "sha256:d04349a3a692999f5f094da096c90b538bd7aad14003b48408dd5520438c298b"},
-    {file = "ultima_scraper_renamer-0.0.5.tar.gz", hash = "sha256:4b8937a68740e4b42cea9477ed922ce6ccdc4cb86ab2f3b0b39c1dd0b2173c25"},
+    {file = "ultima_scraper_renamer-0.0.6-py3-none-any.whl", hash = "sha256:388bc3d560ffd4db8012775e8ff8603a2190ac5267c4f98f6c36467a54c302bd"},
+    {file = "ultima_scraper_renamer-0.0.6.tar.gz", hash = "sha256:2e63b0ae762b2a519a3b310ced2246135e01d4e69b9721b84d8b51147ecdb338"},
 ]
 unidecode = [
     {file = "Unidecode-1.3.6-py3-none-any.whl", hash = "sha256:547d7c479e4f377b430dd91ac1275d593308dce0fc464fb2ab7d41f82ec653be"},
