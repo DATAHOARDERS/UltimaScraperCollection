@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "ultima-scraper-collection"
+version = "0.0.1"
+description = ""
+authors = [
+    "DIGITALCRIMINALS <89371864+digitalcriminals@users.noreply.github.com>",
+]
+packages = [{include = "ultima_scraper_collection"}]
+include = ["ultima_scraper_collection/py.typed"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+ultima-scraper-api = "0.0.2.4"
+ultima-scraper-renamer = "0.0.6"
+sqlalchemy = "^2.0.1"
+psycopg2 = "^2.9.5"
+alembic = "^1.9.2"
+tqdm = "^4.65.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
