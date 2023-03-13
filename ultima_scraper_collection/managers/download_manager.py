@@ -29,13 +29,12 @@ class DownloadManager:
         _result = await asyncio.gather(
             *[self.download(x) for x in self.download_list], return_exceptions=True
         )
-        pass
 
     async def download(self, download_item: TemplateMediaModel):
         while True:
-            result = await self.session_manager.request(download_item.link)
-            download_path = Path(download_item.directory, download_item.filename)
             async with self.session_manager.semaphore:
+                result = await self.session_manager.request(download_item.link)
+                download_path = Path(download_item.directory, download_item.filename)
                 async with result as response:
                     download = await self.check(download_item, response)
                     if not download:

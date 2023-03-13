@@ -1,11 +1,8 @@
 from typing import Any
 
-from ultima_scraper_api.apis.dashboard_controller_api import DashboardControllerAPI
-
 
 class OptionManager:
     def __init__(self) -> None:
-        self.dashboard_controller_api: DashboardControllerAPI | None = None
         self.performer_options: OptionsFormat | None = None
         self.subscription_options: OptionsFormat | None = None
         pass
@@ -16,9 +13,7 @@ class OptionManager:
         options_type: str,
         auto_choice: list[int | str] | int | str | bool = False,
     ):
-        option = await OptionsFormat(
-            items, options_type, auto_choice, self.dashboard_controller_api
-        ).formatter()
+        option = await OptionsFormat(items, options_type, auto_choice).formatter()
         return option
 
 
@@ -28,7 +23,6 @@ class OptionsFormat:
         items: list[Any],
         options_type: str,
         auto_choice: list[int | str] | int | str | bool = False,
-        dashboard_controller_api: DashboardControllerAPI | None = None,
     ) -> None:
         self.items = items
         self.item_keys: list[str] = []
@@ -37,7 +31,6 @@ class OptionsFormat:
         self.auto_choice = auto_choice
         self.choice_list: list[str] = []
         self.final_choices = []
-        self.dashboard_controller_api = dashboard_controller_api
 
     async def formatter(self):
         options_type = self.options_type
@@ -158,12 +151,8 @@ class OptionsFormat:
                     input_list = process_option(input_values)
                     self.choice_list = [x for x in input_values if x.isalpha()]
         else:
-            if self.dashboard_controller_api:
-                input_value = await self.dashboard_controller_api.prompt(self.string)
-                pass
-            else:
-                print(self.string)
-                input_value = input().lower()
+            print(self.string)
+            input_value = input().lower()
             if input_value != "0" and input_value != "all":
                 input_values = input_value.split(",")
                 input_list = process_option(input_values)
@@ -187,9 +176,5 @@ class OptionsFormat:
     def return_auto_choice(self):
         identifiers = []
         if isinstance(self.auto_choice, list):
-            identifiers = [
-                x
-                for x in self.auto_choice
-                if not isinstance(x, bool)
-            ]
+            identifiers = [x for x in self.auto_choice if not isinstance(x, bool)]
         return identifiers
