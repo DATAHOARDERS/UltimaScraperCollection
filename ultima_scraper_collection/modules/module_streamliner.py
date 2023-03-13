@@ -131,6 +131,7 @@ class StreamlinedDatascraper:
                                 valid_user_list.add(performer)
         # Need to filter out own profile with is_performer,etc
         for user in valid_user_list:
+            authed = user.get_authed()
             if user.username in authed.blacklist:
                 valid_user_list.remove(user)
             pass

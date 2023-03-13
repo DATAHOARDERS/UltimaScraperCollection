@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "0.0.0.2"
+version = "0.0.0.4"
 description = ""
 authors = [
     "DIGITALCRIMINALS <89371864+digitalcriminals@users.noreply.github.com>",
@@ -12,7 +12,7 @@ include = ["ultima_scraper_collection/py.typed"]
 python = "^3.10"
 
 ultima-scraper-api = "0.0.2.5"
-ultima-scraper-renamer = "0.0.7"
+ultima-scraper-renamer = "0.0.8"
 sqlalchemy = "^2.0.1"
 psycopg2 = "^2.9.5"
 alembic = "^1.9.2"
