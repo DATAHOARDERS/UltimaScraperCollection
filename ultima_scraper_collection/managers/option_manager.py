@@ -29,7 +29,6 @@ class OptionsFormat:
         self.string = ""
         self.options_type = options_type
         self.auto_choice = auto_choice
-        self.choice_list: list[str] = []
         self.final_choices = []
 
     async def formatter(self):
@@ -149,7 +148,6 @@ class OptionsFormat:
                 if isinstance(self.auto_choice, list):
                     input_values = [str(x).lower() for x in self.auto_choice]
                     input_list = process_option(input_values)
-                    self.choice_list = [x for x in input_values if x.isalpha()]
         else:
             print(self.string)
             input_value = input().lower()
