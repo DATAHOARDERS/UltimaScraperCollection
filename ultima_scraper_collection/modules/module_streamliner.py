@@ -74,7 +74,7 @@ class StreamlinedDatascraper:
         self.filesystem_manager = FilesystemManager()
         self.content_types = self.datascraper.api.ContentTypes()
         self.media_types = self.datascraper.api.Locations()
-        self.user_list: list[user_types] = []
+        self.user_list: set[user_types] = set()
 
     async def configure_datascraper_jobs(self):
         api = self.datascraper.api
@@ -130,13 +130,14 @@ class StreamlinedDatascraper:
                                 performer.scrape_whitelist.clear()
                                 valid_user_list.add(performer)
         # Need to filter out own profile with is_performer,etc
-        for user in valid_user_list:
-            authed = user.get_authed()
-            if user.username in authed.blacklist:
-                valid_user_list.remove(user)
-            pass
-        self.user_list = valid_user_list
-        return valid_user_list
+        final_valid_user_set = {
+            user
+            for user in valid_user_list
+            if user.username not in user.get_authed().blacklist
+        }
+
+        self.user_list = final_valid_user_set
+        return final_valid_user_set
 
     # Prepares the API links to be scraped
 
