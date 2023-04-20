@@ -5,15 +5,13 @@ from itertools import product
 from typing import Any, Optional
 
 import ultima_scraper_api
-import ultima_scraper_api.apis.fansly.classes as fansly_classes
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_renamer import renamer
 
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
-    TemplateMediaModel,
+from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
+    ApiModel,
 )
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
@@ -40,6 +38,9 @@ if TYPE_CHECKING:
     )
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.onlyfans import (
         OnlyFansDataScraper,
+    )
+    from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+        ContentMetadata,
     )
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
@@ -73,8 +74,9 @@ class StreamlinedDatascraper:
         self.datascraper = datascraper
         self.filesystem_manager = FilesystemManager()
         self.content_types = self.datascraper.api.ContentTypes()
-        self.media_types = self.datascraper.api.Locations()
+        self.media_types = self.datascraper.api.MediaTypes()
         self.user_list: set[user_types] = set()
+        self.metadata_manager_users: dict[int, MetadataManager] = {}
 
     async def configure_datascraper_jobs(self):
         api = self.datascraper.api
@@ -116,7 +118,7 @@ class StreamlinedDatascraper:
                 paid_contents = await authed.get_paid_content()
                 if not isinstance(paid_contents, error_types):
                     for paid_content in paid_contents:
-                        author = await paid_content.get_author()
+                        author = paid_content.get_author()
                         if identifiers:
                             found = await author.match_identifiers(identifiers)
                             if not found:
@@ -156,24 +158,15 @@ class StreamlinedDatascraper:
         if not temp_master_set:
             match content_type:
                 case "Stories":
-                    pass
                     temp_master_set.extend(
                         await self.datascraper.get_all_stories(subscription)
                     )
                     pass
                 case "Posts":
-                    temp_master_set = await subscription.get_posts()
-                    # Archived Posts
-                    if isinstance(subscription, fansly_classes.user_model.create_user):
-                        collections = await subscription.get_collections()
-                        for collection in collections:
-                            temp_master_set.append(
-                                await subscription.get_collection_content(collection)
-                            )
-                        pass
-                    else:
-                        temp_master_set += await subscription.get_archived_posts()
+                    temp_master_set = await self.datascraper.get_all_posts(subscription)
+                    pass
                 case "Messages":
+                    pass
                     unrefined_set: list[
                         message_types | Any
                     ] = await subscription.get_messages()
@@ -211,7 +204,8 @@ class StreamlinedDatascraper:
     ):
         if not master_set:
             return False
-
+        # if  api_type != "Posts":
+        #     return
         authed = subscription.get_authed()
         subscription_directory_manager = self.filesystem_manager.get_directory_manager(
             subscription.id
@@ -235,50 +229,29 @@ class StreamlinedDatascraper:
             unrefined_set: list[dict[str, Any]] = await tqdm_asyncio.gather(
                 *tasks, **settings
             )
-            new_metadata: dict[str, Any] = await main_helper.format_media_set(
-                unrefined_set
-            )
+            new_metadata = metadata_manager.merge_content_and_directories(unrefined_set)
+            final_content, _final_directories = new_metadata
             metadata_path = formatted_metadata_directory.joinpath("user_data.db")
             metadata_manager.db_manager = DatabaseManager().get_sqlite_db(metadata_path)
-            legacy_metadata_path = formatted_metadata_directory.joinpath(
-                api_type + ".db"
-            )
             if new_metadata:
-                new_metadata_content: list[dict[str, Any]] = new_metadata["content"]
+                new_metadata_content = final_content
+                metadata_manager.content_metadatas.extend(new_metadata_content)
                 print("Processing metadata.")
-                (
-                    old_metadata,
-                    delete_metadatas,
-                ) = await metadata_manager.process_legacy_metadata(
-                    subscription,
-                    api_type,
-                    metadata_path,
-                    subscription_directory_manager,
-                )
-                new_metadata_content.extend(old_metadata)
-                subscription.set_scraped(api_type, new_metadata_content)
-                result = await metadata_manager.process_metadata(
-                    legacy_metadata_path,
-                    new_metadata_content,
-                    api_type,
-                    subscription,
-                    delete_metadatas,
-                )
-                if result:
+                subscription.scrape_manager.set_scraped(api_type, new_metadata_content)
+                if new_metadata_content:
                     import_status = metadata_manager.db_manager.import_metadata(
-                        api_type, result
+                        new_metadata_content, api_type
                     )
                     if import_status:
                         Session = metadata_manager.db_manager.session_factory
                         if authed.api.config.settings.helpers.renamer:
-                            print("Renaming files.")
+                            print(f"{subscription.username}: Renaming files.")
                             _new_metadata_object = await renamer.start(
                                 subscription,
                                 subscription_directory_manager,
                                 api_type,
                                 Session,
                             )
-                        metadata_manager.delete_metadatas()
                         pass
             else:
                 print(f"No {api_type} found.")
@@ -286,19 +259,20 @@ class StreamlinedDatascraper:
 
     # Downloads scraped content
 
-    async def prepare_downloads(self, subscription: user_types, api_type: str):
-        global_settings = subscription.get_api().get_global_settings()
-        site_settings = subscription.get_api().get_site_settings()
+    async def prepare_downloads(self, performer: user_types, api_type: str):
+        metadata_manager = self.metadata_manager_users[performer.id]
+        global_settings = performer.get_api().get_global_settings()
+        site_settings = performer.get_api().get_site_settings()
         if not (global_settings and site_settings):
             return
         filesystem_manager = self.datascraper.filesystem_manager
-        subscription_directory_manager = filesystem_manager.get_directory_manager(
-            subscription.id
+        performer_directory_manager = filesystem_manager.get_directory_manager(
+            performer.id
         )
-        directory = subscription_directory_manager.root_download_directory
-        current_job = subscription.get_current_job()
+        directory = performer_directory_manager.root_download_directory
+        current_job = performer.get_current_job()
 
-        metadata_path = subscription_directory_manager.user.metadata_directory.joinpath(
+        metadata_path = performer_directory_manager.user.metadata_directory.joinpath(
             "user_data.db"
         )
         user_data_db = DatabaseManager().get_sqlite_db(metadata_path)
@@ -306,37 +280,43 @@ class StreamlinedDatascraper:
             database_session = user_data_db.session
             db_collection = DBCollection()
             database = db_collection.database_picker("user_data")
+            api_table = database.table_picker(api_type)
+            media_table = database.media_table
+            overwrite_files = site_settings.overwrite_files
+            media_set_count = 0
+            final_download_list: set[ContentMetadata] = set()
             if database:
-                media_table = database.media_table
-                overwrite_files = site_settings.overwrite_files
-                if overwrite_files:
-                    download_list: list[TemplateMediaModel] = (
-                        database_session.query(media_table)
-                        .filter(media_table.api_type == api_type)
-                        .all()
-                    )
-                    media_set_count = len(download_list)
-                else:
-                    download_list: list[TemplateMediaModel] = (
-                        database_session.query(media_table)
-                        .filter(media_table.downloaded == False)
-                        .filter(media_table.api_type == api_type)
-                    )
-                    media_set_count = user_data_db.get_count(download_list)
-                    pass
-                # Unique download list
-                final_download_list: set[TemplateMediaModel] = set()
-                for download_item in download_list:
-                    found = [
-                        x
-                        for x in download_list
-                        if download_item.media_id == x.media_id
-                        and download_item.api_type == x.api_type
-                    ]
-                    final_download_list.add(found[0])
+                db_content_dict = {}
+                db_posts: list[ApiModel] = database_session.query(api_table)
+                for db_post in db_posts:
+                    if db_post.post_id not in db_content_dict:
+                        db_content_dict[db_post.post_id] = db_post
+                    else:
+                        raise Exception("Duplicate key in db_content_dict")
+
+                content_metadatas = metadata_manager.content_metadatas
+                for content_metadata in content_metadatas:
+                    if content_metadata.api_type == api_type:
+                        db_post = db_content_dict[content_metadata.content_id]
+                        if content_metadata.content_id == db_post.post_id:
+                            content_metadata.__db_content__ = db_post
+                            db_media_query = (
+                                database_session.query(media_table)
+                                .filter(media_table.post_id == db_post.post_id)
+                                .filter(media_table.api_type == api_type)
+                            )
+                            if overwrite_files:
+                                db_post.medias = db_media_query.all()
+                            else:
+                                db_post.medias = db_media_query.filter(
+                                    media_table.downloaded == False
+                                ).all()
+                            if content_metadata.medias:
+                                final_download_list.add(content_metadata)
+                                media_set_count += len(db_post.medias)
                 download_manager = DownloadManager(
                     filesystem_manager,
-                    subscription.get_session_manager(),
+                    performer.get_session_manager(),
                     final_download_list,
                     global_settings.helpers.reformat_media,
                 )
@@ -344,10 +324,11 @@ class StreamlinedDatascraper:
                 download_count = len(final_download_list)
                 duplicate_count = media_set_count - download_count
                 string = "Download Processing\n"
-                string += f"Name: {subscription.username} | Type: {api_type} | Downloading: {download_count} | Total: {media_set_count} | Duplicates: {duplicate_count} {location} | Directory: {directory}\n"
+                string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_count} | Total: {media_set_count} | Duplicates: {duplicate_count} {location} | Directory: {directory}\n"
                 if media_set_count:
                     print(string)
                     result = await download_manager.bulk_download()
+                    pass
                 while True:
                     try:
                         database_session.commit()
