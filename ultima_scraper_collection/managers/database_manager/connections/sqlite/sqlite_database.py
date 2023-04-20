@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ultima_scraper_api
 from alembic import command
@@ -12,6 +12,12 @@ from sqlalchemy.orm import DeclarativeBase, scoped_session, sessionmaker
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models import (
     user_database,
 )
+
+if TYPE_CHECKING:
+
+    from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+        ContentMetadata,
+    )
 
 user_types = ultima_scraper_api.user_types
 
@@ -122,72 +128,76 @@ class SqliteDatabase(DeclarativeBase):
                 print(e)
                 pass
 
-    def import_metadata(self, api_type: str, datas: list[dict[str, Any]]):
+    def import_metadata(
+        self, datas: list["ContentMetadata"], api_type: str | None = None
+    ):
         database_path = self.name
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self.run_migrations()
         db_collection = DBCollection()
         database = db_collection.database_picker(database_path.stem)
         database_session = self.session
-        api_table = database.table_picker(api_type)
-        if not api_table:
-            return
         for post in datas:
-            post_id = post["post_id"]
-            postedAt = post["postedAt"]
+            if post.api_type:
+                api_type = post.api_type
+            api_table = database.table_picker(api_type)
+            if not api_table:
+                return
+            post_id = post.content_id
+            created_at_string = post.created_at_string
             date_object = None
-            if postedAt:
-                if not isinstance(postedAt, datetime):
-                    date_object = datetime.strptime(postedAt, "%d-%m-%Y %H:%M:%S")
-                else:
-                    date_object = postedAt
+            if created_at_string:
+                date_object = datetime.strptime(created_at_string, "%d-%m-%Y %H:%M:%S")
             result = database_session.query(api_table)
             post_db = result.filter_by(post_id=post_id).first()
             if not post_db:
                 post_db = api_table()
-            if api_type == "Products":
-                post_db.title = post["title"]
+            else:
+                pass
             if api_type == "Messages":
-                post_db.user_id = post.get("user_id", None)
+                post_db.user_id = post.user_id
             post_db.post_id = post_id
-            post_db.text = post["text"]
-            if post["price"] is None:
-                post["price"] = 0
-            post_db.price = post["price"]
-            post_db.paid = post["paid"]
-            post_db.archived = post["archived"]
+            post_db.text = post.text
+            post_db.price = post.price
+            post_db.paid = post.paid
+            post_db.archived = post.archived
             if date_object:
                 post_db.created_at = date_object
             database_session.add(post_db)
-            for media in post["medias"]:
-                if media["media_type"] == "Texts":
+            for media in post.medias:
+                if media.media_type == "Texts":
                     continue
-                created_at = media.get("created_at", postedAt)
+                created_at = media.created_at
                 if not isinstance(created_at, datetime):
                     date_object = datetime.strptime(created_at, "%d-%m-%Y %H:%M:%S")
-                else:
-                    date_object = postedAt
-                media_id = media.get("media_id", None)
+                media_id = media.id
                 result = database_session.query(database.media_table)
                 media_db = result.filter_by(post_id=post_id, media_id=media_id).first()
                 if not media_db:
                     media_db = result.filter_by(
-                        filename=media["filename"], created_at=date_object
+                        filename=media.filename, created_at=date_object
                     ).first()
                     if not media_db:
                         media_db = database.media_table()
+                else:
+                    pass
+                if (
+                    post.__legacy__
+                    and media_db.media_id != media.id
+                    and media_db.media_id
+                ):
+                    media_id = media_db.media_id
+
                 media_db.media_id = media_id
                 media_db.post_id = post_id
-                if "_sa_instance_state" in post:
-                    media_db.size = media["size"]
-                    media_db.downloaded = media["downloaded"]
-                media_db.link = media["links"][0]
-                media_db.preview = media.get("preview", False)
-                media_db.directory = media["directory"]
-                media_db.filename = media["filename"]
+                media_db.size = media.size if media_db.size is None else media_db.size
+                media_db.link = media.urls[0]
+                media_db.preview = media.preview
+                media_db.directory = media.directory.as_posix()
+                media_db.filename = media.filename
                 media_db.api_type = api_type
-                media_db.media_type = media["media_type"]
-                media_db.linked = media.get("linked", None)
+                media_db.media_type = media.media_type
+                media_db.linked = media.linked
                 if date_object:
                     media_db.created_at = date_object
                 database_session.add(media_db)
@@ -199,7 +209,6 @@ class SqliteDatabase(DeclarativeBase):
         self,
         api_type: str,
         subscription: user_types,
-        delete_metadatas: list[Path],
     ):
         final_result: list[dict[str, Any]] = []
         legacy_metadata_path = self.name
@@ -219,20 +228,14 @@ class SqliteDatabase(DeclarativeBase):
                     result = database_session.query(api_table_table).all()
                     result2 = database_session.query(media_table_table).all()
                     for item in result:
-                        item: dict[str, int | list[Any]] = item.__dict__
-                        item["medias"] = []
                         for item2 in result2:
-                            if item["post_id"] != item2.post_id:
+                            if item.post_id != item2.post_id:
                                 continue
-                            item2 = item2.__dict__
-                            item2["links"] = [item2["link"]]
-                            item["medias"].append(item2)
-                        item["user_id"] = subscription.id
-                        item["postedAt"] = item["created_at"]
+                            item.medias.append(item2)
+                        item.user_id = subscription.id
                         final_result.append(item)
-                    delete_metadatas.append(legacy_metadata_path)
             database_session.close()
-        return final_result, delete_metadatas
+        return final_result
 
     def find_table(self, name: str):
         table = [x for x in self.metadata.sorted_tables if x.name == name]

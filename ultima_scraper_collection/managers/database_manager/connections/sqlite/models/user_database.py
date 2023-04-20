@@ -1,5 +1,3 @@
-### messages.py ###
-
 from typing import Optional, cast
 
 import sqlalchemy
@@ -59,11 +57,11 @@ class media_table(TemplateMediaModel, Base):
 
 def table_picker(table_name: str, legacy: bool = False):
     match table_name:
-        case "Stories":
+        case "Stories" | "Highlights":
             table = stories_table
         case "Posts":
             table = posts_table
-        case "Messages":
+        case "Messages" | "Chats" | "MassMessages":
             table = messages_table if not legacy else messages_table().api_legacy_table
         case "Products":
             table = products_table
