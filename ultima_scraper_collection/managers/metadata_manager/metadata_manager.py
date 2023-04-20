@@ -605,59 +605,6 @@ class MetadataManager:
                 new_filepath.parent.mkdir(exist_ok=True)
                 archived_database_path.rename(new_filepath)
 
-    async def old_process_legacy_metadata(
-        self,
-        user: user_types,
-        api_type: str,
-        metadata_filepath: Path,
-        directory_manager: DirectoryManager,
-    ):
-        p_r = prepare_reformat()
-        file_manager = self.filesystem_manager.get_file_manager(user.id)
-        old_metadata_filepaths = await p_r.find_metadata_files(
-            file_manager.files, legacy_files=False
-        )
-        for old_metadata_filepath in old_metadata_filepaths:
-            new_m_f = directory_manager.user.metadata_directory.joinpath(
-                old_metadata_filepath.name
-            )
-            if old_metadata_filepath.exists() and not new_m_f.exists():
-                shutil.move(old_metadata_filepath, new_m_f)
-        old_metadata_filepaths = await p_r.find_metadata_files(
-            file_manager.files, legacy_files=False
-        )
-        legacy_metadata_filepaths = [
-            x for x in old_metadata_filepaths if x.stem.find(api_type) == 0
-        ]
-        legacy_metadata_object, delete_legacy_metadatas = await legacy_metadata_fixer(
-            metadata_filepath, legacy_metadata_filepaths
-        )
-        final_set: list[ContentMetadata] = []
-        for legacy_metadata_filepath in legacy_metadata_filepaths:
-            for legacy_content_item in self.legacy_content_metadatas:
-                found_scraped = self.find_content_metadata_by_id(
-                    legacy_content_item.content_id
-                )
-                if found_scraped:
-                    for media_item in legacy_content_item.medias:
-                        found_media = found_scraped.find_media_metadata_by_id(
-                            media_item.id
-                        )
-                        if not found_media:
-                            found_media = found_scraped.find_media_by_url(
-                                media_item.urls
-                            )
-                        if found_media:
-                            found_media.size = media_item.size
-                else:
-                    final_set.append(legacy_content_item)
-        delete_metadatas: list[Path] = []
-        if delete_legacy_metadatas:
-            print("Merging new metadata with legacy metadata.")
-            delete_metadatas.extend(delete_legacy_metadatas)
-        print("Finished processing metadata.")
-        return final_set, delete_metadatas
-
     def export(self, api_type: str, datas: list[dict[str, Any]]):
         if api_type == "Posts":
             self.db_manager
