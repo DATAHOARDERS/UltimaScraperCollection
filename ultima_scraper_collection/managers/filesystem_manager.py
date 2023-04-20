@@ -45,6 +45,9 @@ class FilesystemManager:
             if isinstance(directory, Path):
                 directory.mkdir(exist_ok=True)
 
+    def move(self, src: Path, trg: Path):
+        shutil.move(src, trg)
+
     def remove_mandatory_files(
         self, files: list[Path] | Generator[Path, None, None], keep: list[str] = []
     ):
@@ -156,10 +159,7 @@ class FilesystemManager:
             self.file_manager_users[user.id] = FileManager(directory_manager)
             return directory_manager
 
-    async def format_directories(
-        self,
-        subscription: user_types,
-    ) -> DirectoryManager:
+    async def format_directories(self, subscription: user_types) -> DirectoryManager:
 
         directory_manager = self.get_directory_manager(subscription.id)
         file_manager = self.get_file_manager(subscription.id)
@@ -202,28 +202,9 @@ class FilesystemManager:
             await file_manager.set_default_files(
                 prepared_metadata_format, prepared_download_format
             )
-            metadata_filepaths = await file_manager.find_metadata_files(
+            _metadata_filepaths = await file_manager.find_metadata_files(
                 legacy_files=False
             )
-            for metadata_filepath in metadata_filepaths:
-                new_m_f = directory_manager.user.metadata_directory.joinpath(
-                    metadata_filepath.name
-                )
-                if metadata_filepath != new_m_f:
-                    counter = 0
-                    while True:
-                        if not new_m_f.exists():
-                            # If there's metadata present already before the directory is created, we'll create it here
-                            directory_manager.user.metadata_directory.mkdir(
-                                exist_ok=True, parents=True
-                            )
-                            shutil.move(metadata_filepath, new_m_f)
-                            break
-                        else:
-                            new_m_f = new_m_f.with_stem(
-                                f"{metadata_filepath.stem}_{counter}"
-                            )
-                            counter += 1
             # I forgot why we need to set default file twice
             await file_manager.set_default_files(
                 prepared_metadata_format, prepared_download_format
