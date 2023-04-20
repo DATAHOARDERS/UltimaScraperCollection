@@ -9,6 +9,10 @@ from ultima_scraper_collection.managers.database_manager.connections.sqlite.mode
     TemplateMediaModel,
 )
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    ContentMetadata,
+    MediaMetadata,
+)
 
 
 class DownloadManager:
@@ -16,49 +20,69 @@ class DownloadManager:
         self,
         filesystem_manager: FilesystemManager,
         session_manager: SessionManager,
-        download_list: set[TemplateMediaModel] = set(),
+        content_list: set[ContentMetadata] = set(),
         reformat: bool = True,
     ) -> None:
         self.filesystem_manager = filesystem_manager
         self.session_manager = session_manager
-        self.download_list: set[TemplateMediaModel] = download_list
+        self.content_list: set[ContentMetadata] = content_list
         self.errors: list[TemplateMediaModel] = []
         self.reformat = reformat
 
     async def bulk_download(self):
-        _result = await asyncio.gather(
-            *[self.download(x) for x in self.download_list], return_exceptions=True
-        )
+        final_list: list[MediaMetadata] = [
+            self.download(media_item)
+            for download_item in self.content_list
+            for media_item in download_item.medias
+        ]
+        _result = await asyncio.gather(*final_list, return_exceptions=True)
 
-    async def download(self, download_item: TemplateMediaModel):
-        while True:
-            async with self.session_manager.semaphore:
-                result = await self.session_manager.request(download_item.link)
-                download_path = Path(download_item.directory, download_item.filename)
-                async with result as response:
-                    download = await self.check(download_item, response)
-                    if not download:
-                        break
-                    failed = await self.filesystem_manager.write_data(
-                        response, download_path
+    async def download(self, download_item: MediaMetadata):
+        attempt = 0
+        content_metadata = download_item.__content_metadata__
+        db_content = content_metadata.__db_content__
+        db_media = db_content.find_media(download_item.id)
+        pass
+        while attempt < self.session_manager.max_attempts + 1:
+            try:
+                async with self.session_manager.semaphore:
+                    result = await self.session_manager.request(download_item.urls[0])
+                    download_path = Path(
+                        download_item.directory, download_item.filename
                     )
-                    if not failed:
-                        timestamp = download_item.created_at.timestamp()
-                        await main_helper.format_image(
-                            download_path,
-                            timestamp,
-                            self.reformat,
-                        )
-                        download_item.size = response.content_length
-                        download_item.downloaded = True
-                        break
-                    elif failed == 1:
-                        # Server Disconnect Error
+                    if result.status == 403:
+                        attempt += 1
+                        # test = await content_metadata._soft_.refresh()
                         continue
-                    elif failed == 2:
-                        # Resource Not Found Error
-                        break
+                    async with result as response:
+                        download = await self.check(db_media, response)
+                        if not download:
+                            break
+                        failed = await self.filesystem_manager.write_data(
+                            response, download_path
+                        )
+                        if not failed:
+                            timestamp = db_media.created_at.timestamp()
+                            await main_helper.format_image(
+                                download_path,
+                                timestamp,
+                                self.reformat,
+                            )
+                            db_media.size = response.content_length
+                            db_media.downloaded = True
+                            break
+                        elif failed == 1:
+                            # Server Disconnect Error
+                            continue
+                        elif failed == 2:
+                            # Resource Not Found Error
+                            break
+                        pass
                     pass
+            except asyncio.TimeoutError as e:
+                pass
+            except Exception as e:
+                print(e)
                 pass
 
     async def check(self, download_item: TemplateMediaModel, response: ClientResponse):
