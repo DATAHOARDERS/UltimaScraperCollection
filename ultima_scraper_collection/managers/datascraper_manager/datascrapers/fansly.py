@@ -6,12 +6,15 @@ from urllib.parse import urlparse
 
 from ultima_scraper_api.apis.fansly.classes.auth_model import create_auth
 from ultima_scraper_api.apis.fansly.classes.collection_model import create_collection
-from ultima_scraper_api.apis.fansly.classes.create_story import create_story
 from ultima_scraper_api.apis.fansly.classes.message_model import create_message
 from ultima_scraper_api.apis.fansly.classes.post_model import create_post
+from ultima_scraper_api.apis.fansly.classes.story_model import create_story
 from ultima_scraper_api.apis.fansly.classes.user_model import create_user
 from ultima_scraper_api.apis.fansly.fansly import FanslyAPI
 
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    ContentMetadata,
+)
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
 
@@ -47,11 +50,59 @@ class FanslyDataScraper(StreamlinedDatascraper):
             pass
         if api_type == "Messages":
             pass
-        post_result.media.extend(post_result.previews)
-
         download_path = formatted_directory
         model_username = subscription.username
         date_format = site_settings.date_format
+        from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+            Extractor,
+        )
+
+        content_metadata = ContentMetadata(post_result.id, api_type)
+        content_metadata.resolve_extractor(Extractor(post_result))
+        matches = [
+            s for s in site_settings.ignored_keywords if s in content_metadata.text
+        ]
+        if matches:
+            print("Ignoring - ", f"PostID: {content_metadata.content_id}")
+            return
+        for asset in content_metadata.medias:
+            filename = urlparse(asset.urls[0]).path.split("/")[-1]
+            name, ext = filename.rsplit(".", 1)
+            final_api_type = (
+                os.path.join("Archived", api_type)
+                if content_metadata.archived
+                else api_type
+            )
+            option: dict[str, Any] = {}
+            option = option | content_metadata.__dict__
+            option["site_name"] = api.site_name
+            option["media_id"] = asset.id
+            option["filename"] = name
+            option["api_type"] = final_api_type
+            option["media_type"] = asset.media_type
+            option["ext"] = ext
+            option["profile_username"] = authed.username
+            option["model_username"] = model_username
+            option["date_format"] = date_format
+            option["postedAt"] = asset.created_at
+            option["text_length"] = site_settings.text_length
+            option["directory"] = download_path
+            option["preview"] = asset.preview
+            option["archived"] = content_metadata.archived
+
+            prepared_format = prepare_reformat(option)
+            file_directory = await prepared_format.reformat_2(
+                site_settings.file_directory_format
+            )
+            prepared_format.directory = file_directory
+            file_path = await prepared_format.reformat_2(site_settings.filename_format)
+            asset.directory = file_directory
+            asset.filename = file_path.name
+            if file_directory not in directories:
+                directories.append(file_directory)
+        new_set["content"].append(content_metadata)
+        new_set["directories"] = directories
+        return new_set
         locations = self.media_types
         for media_type, alt_media_types in locations.__dict__.items():
             date_today = datetime.now()
@@ -75,7 +126,7 @@ class FanslyDataScraper(StreamlinedDatascraper):
                 rawText = post_result.rawText
                 text = post_result.text
                 _previews = post_result.previews
-                date = post_result.postedAt
+                date = post_result.createdAt
                 price = post_result.price
                 new_post["archived"] = post_result.isArchived
             if isinstance(post_result, create_collection):
@@ -84,7 +135,7 @@ class FanslyDataScraper(StreamlinedDatascraper):
                 rawText = post_result.rawText
                 text = post_result.text
                 _previews = post_result.preview
-                date = post_result.postedAt
+                date = post_result.createdAt
                 price = post_result.price
                 new_post["archived"] = post_result.isArchived
             if isinstance(post_result, create_message):
@@ -259,6 +310,15 @@ class FanslyDataScraper(StreamlinedDatascraper):
         master_set.extend(await subscription.get_stories())
         # master_set.extend(await subscription.get_archived_stories())
         return master_set
+
+    async def get_all_posts(self, subscription: create_user):
+        temp_master_set = await subscription.get_posts()
+        collections = await subscription.get_collections()
+        for collection in collections:
+            temp_master_set.append(
+                await subscription.get_collection_content(collection)
+            )
+        return temp_master_set
 
     async def get_all_subscriptions(
         self,
