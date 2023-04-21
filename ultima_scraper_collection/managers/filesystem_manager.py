@@ -8,15 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Literal
 
 import ultima_scraper_api
-from aiohttp.client_exceptions import (
-    ClientOSError,
-    ClientPayloadError,
-    ContentTypeError,
-    ServerDisconnectedError,
-)
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.classes.prepare_directories import FormatTypes
 from ultima_scraper_api.helpers.main_helper import open_partial
+from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
 from ultima_scraper_renamer.reformat import prepare_reformat
 
 if TYPE_CHECKING:
@@ -99,15 +94,10 @@ class FilesystemManager:
                             total_length += length
                             if callback:
                                 callback(length)
-                    except (
-                        ClientPayloadError,
-                        ContentTypeError,
-                        ClientOSError,
-                        ServerDisconnectedError,
-                    ) as _e:
+                    except EXCEPTION_TEMPLATE as _e:
                         status_code = 1
                     except Exception as _e:
-                        pass
+                        raise Exception(f"Unknown Error: {_e}")
             except:
                 if partial_path:
                     os.unlink(partial_path)
