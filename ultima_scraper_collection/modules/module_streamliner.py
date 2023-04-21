@@ -8,8 +8,6 @@ import ultima_scraper_api
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_renamer import renamer
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -24,6 +22,7 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MetadataManager,
 )
+from ultima_scraper_renamer import renamer
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -41,6 +40,7 @@ if TYPE_CHECKING:
     )
     from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
         ContentMetadata,
+        MediaMetadata,
     )
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
@@ -269,7 +269,7 @@ class StreamlinedDatascraper:
         performer_directory_manager = filesystem_manager.get_directory_manager(
             performer.id
         )
-        directory = performer_directory_manager.root_download_directory
+        directory = performer_directory_manager.user.download_directory
         current_job = performer.get_current_job()
 
         metadata_path = performer_directory_manager.user.metadata_directory.joinpath(
@@ -283,8 +283,9 @@ class StreamlinedDatascraper:
             api_table = database.table_picker(api_type)
             media_table = database.media_table
             overwrite_files = site_settings.overwrite_files
-            media_set_count = 0
-            final_download_list: set[ContentMetadata] = set()
+            final_download_set: set[ContentMetadata] = set()
+            final_media_set : set[MediaMetadata] = set()
+            total_media_count = 0
             if database:
                 db_content_dict = {}
                 db_posts: list[ApiModel] = database_session.query(api_table)
@@ -312,22 +313,22 @@ class StreamlinedDatascraper:
                                     media_table.downloaded == False
                                 ).all()
                             if content_metadata.medias:
-                                final_download_list.add(content_metadata)
-                                media_set_count += len(db_post.medias)
+                                final_download_set.add(content_metadata)
+                                [final_media_set.add(x.id) for x in content_metadata.medias]
+                                total_media_count += len(content_metadata.medias)
                 download_manager = DownloadManager(
                     filesystem_manager,
                     performer.get_session_manager(),
-                    final_download_list,
+                    final_download_set,
                     global_settings.helpers.reformat_media,
                 )
-                location = ""
-                download_count = len(final_download_list)
-                duplicate_count = media_set_count - download_count
-                string = "Download Processing\n"
-                string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_count} | Total: {media_set_count} | Duplicates: {duplicate_count} {location} | Directory: {directory}\n"
-                if media_set_count:
+                download_count = len(final_media_set)
+                duplicate_count = total_media_count - download_count
+                string = "Processing Download:\n"
+                string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_count} | Total: {total_media_count} | Duplicates: {duplicate_count} | Directory: {directory}\n"
+                if total_media_count:
                     print(string)
-                    result = await download_manager.bulk_download()
+                    _result = await download_manager.bulk_download()
                     pass
                 while True:
                     try:

@@ -47,6 +47,10 @@ class DownloadManager:
             try:
                 async with self.session_manager.semaphore:
                     result = await self.session_manager.request(download_item.urls[0])
+                    if not download_item.directory:
+                        raise Exception(
+                            f"{download_item.id} has no directory\n {download_item}"
+                        )
                     download_path = Path(
                         download_item.directory, download_item.filename
                     )
