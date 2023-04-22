@@ -4,7 +4,6 @@ from pathlib import Path
 from aiohttp import ClientResponse
 from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_api.managers.session_manager import SessionManager
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -41,8 +40,11 @@ class DownloadManager:
         attempt = 0
         content_metadata = download_item.__content_metadata__
         db_content = content_metadata.__db_content__
+        if not db_content or not download_item.id:
+            return
         db_media = db_content.find_media(download_item.id)
-        pass
+        if not db_media:
+            return
         while attempt < self.session_manager.max_attempts + 1:
             try:
                 async with self.session_manager.semaphore:

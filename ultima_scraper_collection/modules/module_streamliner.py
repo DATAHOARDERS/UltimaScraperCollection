@@ -284,7 +284,7 @@ class StreamlinedDatascraper:
             media_table = database.media_table
             overwrite_files = site_settings.overwrite_files
             final_download_set: set[ContentMetadata] = set()
-            final_media_set : set[MediaMetadata] = set()
+            final_media_set: set[MediaMetadata] = set()
             total_media_count = 0
             if database:
                 db_content_dict = {}
@@ -312,9 +312,12 @@ class StreamlinedDatascraper:
                                 db_post.medias = db_media_query.filter(
                                     media_table.downloaded == False
                                 ).all()
-                            if content_metadata.medias:
+                            if db_post.medias:
                                 final_download_set.add(content_metadata)
-                                [final_media_set.add(x.id) for x in content_metadata.medias]
+                                [
+                                    final_media_set.add(x.id)
+                                    for x in content_metadata.medias
+                                ]
                                 total_media_count += len(content_metadata.medias)
                 download_manager = DownloadManager(
                     filesystem_manager,
