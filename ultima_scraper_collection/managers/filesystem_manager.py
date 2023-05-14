@@ -24,6 +24,7 @@ class FilesystemManager:
         self.user_data_directory = Path("__user_data__")
         self.trash_directory = self.user_data_directory.joinpath("trash")
         self.profiles_directory = self.user_data_directory.joinpath("profiles")
+        self.devices_directory = self.user_data_directory.joinpath("devices")
         self.settings_directory = Path("__settings__")
         self.ignore_files = ["desktop.ini", ".DS_Store", ".DS_store", "@eaDir"]
         self.directory_manager: DirectoryManager | None = None

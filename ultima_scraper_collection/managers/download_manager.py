@@ -107,6 +107,8 @@ class DownloadManager:
             while attempt < self.session_manager.max_attempts + 1:
                 try:
                     if download_item.drm:
+                        if not authed_drm:
+                            break
                         responses = await self.drm_download(download_item)
                     else:
                         responses = [
