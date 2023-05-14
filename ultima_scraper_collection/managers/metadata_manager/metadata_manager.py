@@ -26,6 +26,9 @@ from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
+from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.user_database import (
+    messages_table,
+)
 
 
 class MetadataExtractor:
@@ -69,6 +72,10 @@ class MetadataExtractor:
 
     def resolve_paid(self):
         return self.item.paid
+
+    def get_receiver_id(self):
+        if isinstance(self.item, messages_table):
+            return
 
 
 class Extractor:

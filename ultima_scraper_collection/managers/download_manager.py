@@ -96,6 +96,8 @@ class DownloadManager:
         db_media = db_content.find_media(download_item.id)
         if not db_media:
             return
+        if not download_item.urls:
+            return
         download_item.__db_item__ = db_media
 
         authed = self.session_manager.auth

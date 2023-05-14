@@ -12,10 +12,9 @@ from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.classes.prepare_directories import FormatTypes
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
-from ultima_scraper_renamer.reformat import prepare_reformat
+from ultima_scraper_renamer.reformat import ReformatItem
 
 if TYPE_CHECKING:
-
     api_types = ultima_scraper_api.api_types
     user_types = ultima_scraper_api.user_types
 
@@ -118,7 +117,6 @@ class FilesystemManager:
         return status_code
 
     async def create_directory_manager(self, api: api_types, user: user_types):
-
         # profile_directory = filesystem_directory_manager.profile.root_directory.joinpath(
         #     self.username
         # )
@@ -134,14 +132,14 @@ class FilesystemManager:
                 "model_username": user.username,
                 "directory": directory_manager.root_download_directory,
             }
-            pr_rt_rd = prepare_reformat(option)
-            _f_d_p = await pr_rt_rd.remove_non_unique(
+            reformat_item_fd = ReformatItem(option)
+            _f_d_p = reformat_item_fd.remove_non_unique(
                 directory_manager, "file_directory_format"
             )
             # f_d_p.mkdir(parents=True, exist_ok=True)
             option["directory"] = self.directory_manager.root_metadata_directory
-            pr_rt_rm = prepare_reformat(option)
-            _f_d_p_2 = await pr_rt_rm.remove_non_unique(
+            reformat_item_md = ReformatItem(option)
+            _f_d_p_2 = reformat_item_md.remove_non_unique(
                 self.directory_manager, "metadata_directory_format"
             )
             # f_d_p_2.mkdir(parents=True, exist_ok=True)
@@ -150,7 +148,6 @@ class FilesystemManager:
             return directory_manager
 
     async def format_directories(self, subscription: user_types) -> DirectoryManager:
-
         directory_manager = self.get_directory_manager(subscription.id)
         file_manager = self.get_file_manager(subscription.id)
         authed = subscription.get_authed()
@@ -160,45 +157,31 @@ class FilesystemManager:
             authed_username = authed.username
             subscription_username = subscription.username
             site_name = authed.api.site_name
-            p_r = prepare_reformat()
-            prepared_metadata_format = await p_r.standard(
-                site_name,
-                authed_username,
-                subscription_username,
-                datetime.today(),
-                site_settings.date_format,
-                site_settings.text_length,
-                directory_manager.root_metadata_directory,
-            )
-            string = await prepared_metadata_format.reformat_2(
-                site_settings.metadata_directory_format
-            )
+            reformat_item = ReformatItem()
+            reformat_item.site_name = site_name
+            reformat_item.profile_username = authed_username
+            reformat_item.model_username = subscription_username
+            reformat_item.date = datetime.today()
+            reformat_item.date_format = site_settings.date_format
+            reformat_item.text_length = site_settings.text_length
+            reformat_item.directory = directory_manager.root_metadata_directory
+            string = reformat_item.reformat(site_settings.metadata_directory_format)
             directory_manager.user.metadata_directory = Path(string)
-            prepared_download_format = copy.copy(prepared_metadata_format)
-            prepared_download_format.directory = (
-                directory_manager.root_download_directory
-            )
-            string = await prepared_download_format.reformat_2(
-                site_settings.file_directory_format
-            )
-            formtatted_root_download_directory = (
-                await prepared_download_format.remove_non_unique(
-                    directory_manager, "file_directory_format"
-                )
+            reformat_item_2 = copy.copy(reformat_item)
+            reformat_item_2.directory = directory_manager.root_download_directory
+            string = reformat_item_2.reformat(site_settings.file_directory_format)
+            formtatted_root_download_directory = reformat_item_2.remove_non_unique(
+                directory_manager, "file_directory_format"
             )
             directory_manager.user.download_directory = (
                 formtatted_root_download_directory
             )
-            await file_manager.set_default_files(
-                prepared_metadata_format, prepared_download_format
-            )
+            await file_manager.set_default_files(reformat_item, reformat_item_2)
             _metadata_filepaths = await file_manager.find_metadata_files(
                 legacy_files=False
             )
             # I forgot why we need to set default file twice
-            await file_manager.set_default_files(
-                prepared_metadata_format, prepared_download_format
-            )
+            await file_manager.set_default_files(reformat_item, reformat_item_2)
             user_metadata_directory = directory_manager.user.metadata_directory
             _user_download_directory = directory_manager.user.download_directory
             legacy_metadata_directory = user_metadata_directory
@@ -312,16 +295,16 @@ class FileManager:
 
     async def set_default_files(
         self,
-        prepared_metadata_format: prepare_reformat,
-        prepared_download_format: prepare_reformat,
+        prepared_metadata_format: ReformatItem,
+        prepared_download_format: ReformatItem,
     ):
         self.files = []
         await self.add_files(prepared_metadata_format, "metadata_directory_format")
         await self.add_files(prepared_download_format, "file_directory_format")
 
-    async def add_files(self, reformatter: prepare_reformat, format_key: str):
+    async def add_files(self, reformatter: ReformatItem, format_key: str):
         directory_manager = self.directory_manager
-        formatted_directory = await reformatter.remove_non_unique(
+        formatted_directory = reformatter.remove_non_unique(
             directory_manager, format_key
         )
         files: list[Path] = []
