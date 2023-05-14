@@ -79,7 +79,7 @@ class FilesystemManager:
     async def write_data(
         self, response: ClientResponse, download_path: Path, callback: Any = None
     ):
-        status_code = 0
+        status_code = None
         if response.status == 200:
             total_length = 0
             os.makedirs(os.path.dirname(download_path), exist_ok=True)

@@ -1,9 +1,13 @@
 import asyncio
+import copy
 from pathlib import Path
 
+import ffmpeg
 from aiohttp import ClientResponse
 from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_api.managers.session_manager import SessionManager
+from ultima_scraper_renamer.reformat import ReformatManager
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -27,6 +31,9 @@ class DownloadManager:
         self.content_list: set[ContentMetadata] = content_list
         self.errors: list[TemplateMediaModel] = []
         self.reformat = reformat
+        self.reformat_manager = ReformatManager(
+            session_manager.auth, filesystem_manager
+        )
 
     async def bulk_download(self):
         final_list: list[MediaMetadata] = [
@@ -35,6 +42,50 @@ class DownloadManager:
             for media_item in download_item.medias
         ]
         _result = await asyncio.gather(*final_list, return_exceptions=True)
+
+    async def drm_download(self, download_item: MediaMetadata):
+        content_metadata = download_item.__content_metadata__
+        authed = self.session_manager.auth
+        site_settings = authed.get_api().get_site_settings()
+        reformat_manager = ReformatManager(authed, self.filesystem_manager)
+        drm = authed.drm
+        media_item = download_item.__raw__
+        assert drm and media_item
+        mpd = await drm.get_mpd(media_item)
+        pssh = await drm.get_pssh(mpd)
+        responses: list[ClientResponse] = []
+
+        if pssh:
+            license = await drm.get_license(
+                content_metadata.__soft__.__raw__, media_item, pssh
+            )
+            keys = await drm.get_keys(license)
+            content_key = keys[-1]
+            key = f"{content_key.kid.hex}:{content_key.key.hex()}"
+            download_item.key = key
+            video_url, audio_url = [
+                drm.get_video_url(mpd, media_item),
+                drm.get_audio_url(mpd, media_item),
+            ]
+            download_item.urls = [video_url]
+            reformat_item = reformat_manager.prepare_reformat(download_item)
+            file_directory = reformat_item.reformat(site_settings.file_directory_format)
+            reformat_item.directory = file_directory
+            file_path = reformat_item.reformat(site_settings.filename_format)
+            download_item.directory = file_directory
+            download_item.filename = file_path.name
+            for media_url in video_url, audio_url:
+                drm_download_item = copy.copy(download_item)
+                drm_download_item = reformat_manager.drm_format(
+                    media_url, drm_download_item
+                )
+
+                signature_str = await drm.get_signature(media_item)
+                response = await authed.session_manager.request(
+                    media_url, premade_settings="", custom_cookies=signature_str
+                )
+                responses.append(response)
+        return responses
 
     async def download(self, download_item: MediaMetadata):
         attempt = 0
@@ -45,51 +96,101 @@ class DownloadManager:
         db_media = db_content.find_media(download_item.id)
         if not db_media:
             return
-        while attempt < self.session_manager.max_attempts + 1:
-            try:
-                async with self.session_manager.semaphore:
-                    result = await self.session_manager.request(download_item.urls[0])
+        download_item.__db_item__ = db_media
+
+        authed = self.session_manager.auth
+        authed_drm = authed.drm
+
+        async with self.session_manager.semaphore:
+            while attempt < self.session_manager.max_attempts + 1:
+                try:
+                    if download_item.drm:
+                        responses = await self.drm_download(download_item)
+                    else:
+                        responses = [
+                            await self.session_manager.request(download_item.urls[0])
+                        ]
+                    if all(response.status != 200 for response in responses):
+                        attempt += 1
+                        continue
                     if not download_item.directory:
                         raise Exception(
                             f"{download_item.id} has no directory\n {download_item}"
                         )
-                    download_path = Path(
-                        download_item.directory, download_item.filename
-                    )
-                    if result.status == 403:
-                        attempt += 1
-                        # test = await content_metadata._soft_.refresh()
-                        continue
-                    async with result as response:
-                        download = await self.check(db_media, response)
-                        if not download:
-                            break
-                        failed = await self.filesystem_manager.write_data(
-                            response, download_path
+                    decrypted_media_paths: list[Path] = []
+                    final_size = 0
+                    error = None
+                    for response in responses:
+                        download_path, error = await self.writer(
+                            response, download_item, encrypted=bool(download_item.key)
                         )
-                        if not failed:
-                            timestamp = db_media.created_at.timestamp()
-                            await main_helper.format_image(
-                                download_path,
-                                timestamp,
-                                self.reformat,
+                        if error:
+                            attempt += 1
+                            break
+                        if authed_drm and download_item.drm and download_path:
+                            output_filepath = authed_drm.decrypt_file(
+                                download_path, download_item.key
                             )
-                            db_media.size = response.content_length
-                            db_media.downloaded = True
-                            break
-                        elif failed == 1:
-                            # Server Disconnect Error
-                            continue
-                        elif failed == 2:
-                            # Resource Not Found Error
-                            break
-                        pass
+                            if not output_filepath:
+                                raise Exception("No output_filepath")
+                            decrypted_media_paths.append(output_filepath)
+                        if response.content_length:
+                            final_size += response.content_length
+                    if error == 1:
+                        # Server Disconnect Error
+                        continue
+                    elif error == 2:
+                        # Resource Not Found Error
+                        break
+                    assert download_item.filename
+                    download_path = download_item.directory.joinpath(
+                        download_item.filename
+                    )
+                    if authed_drm and download_item.drm:
+                        formatted = self.format_media(
+                            download_path,
+                            decrypted_media_paths,
+                        )
+                        if not formatted:
+                            pass
+                        final_size = download_path.stat().st_size
+                    timestamp = db_media.created_at.timestamp()
+                    await main_helper.format_file(
+                        download_path,
+                        timestamp,
+                        self.reformat,
+                    )
+                    db_media.size = final_size
+                    db_media.downloaded = True
+                    break
+                except asyncio.TimeoutError as e:
                     pass
-            except asyncio.TimeoutError as e:
-                pass
-            except Exception as e:
-                print(e)
-                pass
+                except Exception as e:
+                    print(e)
+                    pass
+
+    async def writer(
+        self,
+        result: ClientResponse,
+        download_item: MediaMetadata,
+        encrypted: bool = True,
+    ):
+        async with result as response:
+            if download_item.drm and encrypted:
+                download_item = copy.copy(download_item)
+                download_item = self.reformat_manager.drm_format(
+                    response.url.human_repr(), download_item
+                )
+            assert download_item.directory and download_item.filename
+            download_path = Path(download_item.directory, download_item.filename)
+            db_media = copy.copy(download_item.__db_item__)
+            db_media.directory = download_item.directory
+            db_media.filename = download_item.filename
+            download = await self.check(db_media, response)
+            if not download:
+                return download_path, None
+            failed = await self.filesystem_manager.write_data(response, download_path)
+            return download_path, failed
 
     async def check(self, download_item: TemplateMediaModel, response: ClientResponse):
         filepath = Path(download_item.directory, download_item.filename)
@@ -115,3 +216,22 @@ class DownloadManager:
             else:
                 # Reached this point because it probably exists in the folder but under a different content category
                 pass
+
+    def format_media(self, output_filepath: Path, decrypted_media_paths: list[Path]):
+        # If you have decrypted video and audio to merge
+        if len(decrypted_media_paths) > 1:
+            dec_video_path, dec_audio_path = decrypted_media_paths
+            video_input = ffmpeg.input(dec_video_path)
+            audio_input = ffmpeg.input(dec_audio_path)
+            try:
+                _ffmpeg_output = ffmpeg.output(
+                    video_input,
+                    audio_input,
+                    output_filepath.as_posix(),
+                    vcodec="copy",
+                    acodec="copy",
+                ).run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+                return True
+            except ffmpeg.Error as _e:
+                return False
+        return True

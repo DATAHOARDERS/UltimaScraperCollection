@@ -8,6 +8,8 @@ import ultima_scraper_api
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
+from ultima_scraper_renamer import renamer
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -22,14 +24,15 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MetadataManager,
 )
-from ultima_scraper_renamer import renamer
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
 message_types = ultima_scraper_api.message_types
 error_types = ultima_scraper_api.error_types
+subscription_types = ultima_scraper_api.subscription_types
 
 from typing import TYPE_CHECKING
+
 
 if TYPE_CHECKING:
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
@@ -124,7 +127,7 @@ class StreamlinedDatascraper:
                             if not found:
                                 continue
                         if author:
-                            performer = await authed.get_subscription(
+                            performer = authed.find_user_by_identifier(
                                 identifier=author.id,
                             )
                             if performer:
@@ -145,33 +148,28 @@ class StreamlinedDatascraper:
 
     async def prepare_scraper(
         self,
-        subscription: user_types,
+        user: user_types,
         metadata_manager: MetadataManager,
         content_type: str,
         master_set: list[Any] = [],
     ):
-        authed = subscription.get_authed()
-        current_job = subscription.get_current_job()
+        authed = user.get_authed()
+        current_job = user.get_current_job()
         if not current_job:
             return
         temp_master_set: list[Any] = copy.copy(master_set)
         if not temp_master_set:
             match content_type:
                 case "Stories":
-                    temp_master_set.extend(
-                        await self.datascraper.get_all_stories(subscription)
-                    )
+                    temp_master_set.extend(await self.datascraper.get_all_stories(user))
                     pass
                 case "Posts":
-                    temp_master_set = await self.datascraper.get_all_posts(subscription)
-                    pass
+                    temp_master_set = await self.datascraper.get_all_posts(user)
                 case "Messages":
                     pass
-                    unrefined_set: list[
-                        message_types | Any
-                    ] = await subscription.get_messages()
+                    unrefined_set: list[message_types | Any] = await user.get_messages()
                     mass_messages = getattr(authed, "mass_messages")
-                    if subscription.is_me() and mass_messages:
+                    if user.is_me() and mass_messages:
                         mass_messages = getattr(authed, "mass_messages")
                         # Need access to a creator's account to fix this
                         # unrefined_set2 = await self.datascraper.process_mass_messages(
@@ -191,7 +189,7 @@ class StreamlinedDatascraper:
                 case _:
                     raise Exception(f"{content_type} is an invalid choice")
         await self.process_scraped_content(
-            temp_master_set, content_type, subscription, metadata_manager
+            temp_master_set, content_type, user, metadata_manager
         )
         current_job.done = True
 
@@ -236,7 +234,6 @@ class StreamlinedDatascraper:
             if new_metadata:
                 new_metadata_content = final_content
                 metadata_manager.content_metadatas.extend(new_metadata_content)
-                print("Processing metadata.")
                 subscription.scrape_manager.set_scraped(api_type, new_metadata_content)
                 if new_metadata_content:
                     import_status = metadata_manager.db_manager.import_metadata(
@@ -348,7 +345,7 @@ class StreamlinedDatascraper:
         identifiers: list[int | str] = [],
         refresh: bool = True,
     ):
-        temp_subscriptions: list[user_types] = []
+        temp_subscriptions: list[subscription_types] = []
         results = await self.datascraper.get_all_subscriptions(
             authed, identifiers, refresh
         )
@@ -356,15 +353,15 @@ class StreamlinedDatascraper:
         if not site_settings:
             return temp_subscriptions
         ignore_type = site_settings.ignore_type
-        results.sort(key=lambda x: x.is_me(), reverse=True)
+        results.sort(key=lambda x: x.user.is_me(), reverse=True)
         for result in results:
             # await result.create_directory_manager(user=True)
-            subscribePrice = result.subscribePrice
+            subscribe_price = result.get_price()
             if ignore_type in ["paid"]:
-                if subscribePrice > 0:
+                if subscribe_price > 0:
                     continue
             if ignore_type in ["free"]:
-                if subscribePrice == 0:
+                if subscribe_price == 0:
                     continue
             temp_subscriptions.append(result)
         authed.subscriptions = temp_subscriptions
@@ -378,7 +375,7 @@ class StreamlinedDatascraper:
         identifiers: list[int | str] | list[str] = [],
     ) -> tuple[bool, list[user_types]]:
         status = False
-        subscriptions: list[user_types] = []
+        subscriptions: list[subscription_types] = []
         authed = await auth.login()
 
         if authed.active and site_settings:

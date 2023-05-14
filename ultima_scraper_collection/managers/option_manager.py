@@ -81,9 +81,13 @@ class OptionsFormat:
                     if choice.lower() == key.auth_details.username.lower()
                 ]
             case "subscriptions":
-                self.item_keys = [x.username for x in self.items]
+                subscription_users = [x for x in self.items]
+                self.item_keys = [x.username for x in subscription_users]
                 my_string = " | ".join(
-                    map(lambda x: f"{self.items.index(x)+1} = {x.username}", self.items)
+                    map(
+                        lambda x: f"{subscription_users.index(x)+1} = {x.username}",
+                        subscription_users,
+                    )
                 )
                 final_string = f"{final_string} | {my_string}"
                 self.string = final_string
@@ -91,7 +95,7 @@ class OptionsFormat:
                 self.final_choices = [
                     key
                     for choice in final_list
-                    for key in self.items
+                    for key in subscription_users
                     if choice.lower() == key.username.lower()
                 ]
 

@@ -1,4 +1,3 @@
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -6,9 +5,7 @@ from urllib.parse import ParseResult, urlparse
 
 import ultima_scraper_api
 from sqlalchemy import inspect
-from ultima_scraper_api.apis.onlyfans.classes.message_model import create_message
-from ultima_scraper_api.apis.onlyfans.classes.post_model import create_post
-from ultima_scraper_api.classes.prepare_metadata import legacy_metadata_fixer
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
     SqliteDatabase,
@@ -17,16 +14,15 @@ from ultima_scraper_collection.managers.database_manager.database_manager import
     DatabaseManager,
 )
 from ultima_scraper_collection.managers.filesystem_manager import (
-    DirectoryManager,
     FilesystemManager,
 )
-from ultima_scraper_renamer.reformat import prepare_reformat
 
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
 content_types = ultima_scraper_api.content_types
 from ultima_scraper_api.classes.prepare_metadata import format_content
 from ultima_scraper_api.helpers import main_helper
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -58,7 +54,6 @@ class MetadataExtractor:
     def get_medias(self, content_metadata: "ContentMetadata"):
         final_assets: list[MediaMetadata] = []
         for media in self.item.medias:
-
             new_asset = MediaMetadata(
                 media.media_id,
                 media.media_type,
@@ -129,12 +124,8 @@ class Extractor:
             raw_media_type = asset_metadata["type"]
             if "mimetype" in asset_metadata:
                 raw_media_type: str = asset_metadata["mimetype"].split("/")[0]
-            media_type = (
-                self.item.get_author()
-                .get_api()
-                .MediaTypes()
-                .find_by_value(raw_media_type)
-            )
+            author = self.item.get_author()
+            media_type = author.get_api().MediaTypes().find_by_value(raw_media_type)
             new_asset = MediaMetadata(
                 asset_metadata["id"],
                 media_type,
@@ -143,6 +134,9 @@ class Extractor:
             )
             main_url = self.item.url_picker(asset_metadata)
             preview_url = self.item.preview_url_picker(asset_metadata)
+            authed = author.get_authed()
+            if authed.drm:
+                new_asset.drm = bool(authed.drm.has_drm(asset_metadata))
             new_asset.urls = []
             matches = ["us", "uk", "ca", "ca2", "de"]
             for url in [main_url, preview_url].copy():
@@ -156,12 +150,10 @@ class Extractor:
                             if "convert" in subdomain:
                                 continue
                     new_asset.urls.append(url.geturl())
-            if not new_asset.urls:
-                continue
 
             if int(new_asset.id) in content_metadata.preview_media_ids:
                 new_asset.preview = True
-            new_asset._raw_ = asset_metadata
+            new_asset.__raw__ = asset_metadata
             final_assets.append(new_asset)
         return final_assets
 
@@ -177,11 +169,16 @@ class Extractor:
                 return True
         return False
 
+    def get_receiver_id(self):
+        if isinstance(self.item, ultima_scraper_api.message_types):
+            return self.item.get_receiver().id
+
 
 class ContentMetadata:
     def __init__(self, content_id: int, api_type: str) -> None:
         self.content_id = content_id
         self.user_id: int | None = None
+        self.receiver_id: int | None = None
         self.text: str = ""
         self.preview_media_ids: list[int] | list[dict[str, Any]] = []
         self.archived: bool = False
@@ -191,14 +188,15 @@ class ContentMetadata:
         self.price: float | None = None
         self.paid: bool = False
         self.deleted: bool = False
-        self._raw_: Any | None = None
-        self._soft_ = None
+        self.__raw__: Any | None = None
+        self.__soft__: Any = None
         self.__db_content__: ApiModel | None = None
         self.__legacy__ = False
 
     def resolve_extractor(self, result: Extractor | MetadataExtractor):
         self.content_id = result.get_id()
         self.user_id = result.get_user_id()
+        self.receiver_id = result.get_receiver_id()
         self.text = result.get_text()
         self.preview_media_ids = result.get_preview_ids()
         self.archived = result.resolve_archived()
@@ -207,8 +205,8 @@ class ContentMetadata:
         self.price = getattr(result.item, "price", 0) or 0
         self.paid = result.resolve_paid()
         self.deleted = False
-        self._raw_: Any | None = None
-        self._soft_ = result.item
+        self.__raw__: Any | None = None
+        self.__soft__ = result.item
 
     def add_media(
         self, media_id: int, media_type: str, urls: list[str], preview: bool = False
@@ -252,17 +250,20 @@ class MediaMetadata:
         urls: list[str] = [],
         preview: bool = False,
         created_at: str = "",
+        drm: bool = False,
     ) -> None:
         self.id = int(media_id) if media_id is not None else None
         self.media_type = media_type
         self.urls: list[str] = urls
         self.preview = preview
         self.directory: Path | None = None
-        self.filename = ""
+        self.filename: str | None = None
         self.size = 0
         self.linked = None
+        self.drm = drm
+        self.key: str = ""
         self.created_at = created_at or content_metadata.created_at_string
-        self._raw_: Any | None = None
+        self.__raw__: Any | None = None
         self.__content_metadata__ = content_metadata
 
     def find_by_url(self, url: ParseResult):

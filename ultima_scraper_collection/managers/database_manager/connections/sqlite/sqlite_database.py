@@ -191,9 +191,11 @@ class SqliteDatabase(DeclarativeBase):
                 media_db.media_id = media_id
                 media_db.post_id = post_id
                 media_db.size = media.size if media_db.size is None else media_db.size
-                media_db.link = media.urls[0]
+                media_db.link = media.urls[0] if media.urls else None
                 media_db.preview = media.preview
-                media_db.directory = media.directory.as_posix()
+                media_db.directory = (
+                    media.directory.as_posix() if media.directory else None
+                )
                 media_db.filename = media.filename
                 media_db.api_type = api_type
                 media_db.media_type = media.media_type
