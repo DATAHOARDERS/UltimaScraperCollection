@@ -8,8 +8,6 @@ import ultima_scraper_api
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_renamer import renamer
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -24,6 +22,7 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MetadataManager,
 )
+from ultima_scraper_renamer import renamer
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -32,7 +31,6 @@ error_types = ultima_scraper_api.error_types
 subscription_types = ultima_scraper_api.subscription_types
 
 from typing import TYPE_CHECKING
-
 
 if TYPE_CHECKING:
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
@@ -376,9 +374,10 @@ class StreamlinedDatascraper:
     ) -> tuple[bool, list[user_types]]:
         status = False
         subscriptions: list[subscription_types] = []
-        authed = await auth.login()
+        auth = await auth.login()
 
-        if authed.active and site_settings:
+        if auth.check_authed() and site_settings:
+            authed = auth
             # metadata_filepath = (
             #     authed.directory_manager.profile.metadata_directory.joinpath(
             #         "Mass Messages.json"

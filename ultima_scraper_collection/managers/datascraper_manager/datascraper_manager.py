@@ -1,6 +1,5 @@
 import ultima_scraper_api
 from ultima_scraper_api.apis.onlyfans import onlyfans
-
 from ultima_scraper_collection import datascraper_types
 from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
     FanslyDataScraper,
@@ -17,7 +16,9 @@ class DataScraperManager:
         self.datascrapers: list[datascraper_types] = []
 
     def select_datascraper(
-        self, api: ultima_scraper_api.api_types, option_manager: OptionManager=OptionManager()
+        self,
+        api: ultima_scraper_api.api_types,
+        option_manager: OptionManager = OptionManager(),
     ):
         self.active_datascraper = self.get_datascraper(api)
         if not self.active_datascraper:

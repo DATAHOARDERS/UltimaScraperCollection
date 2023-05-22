@@ -80,6 +80,11 @@ class OptionsFormat:
                     for key in self.items
                     if choice.lower() == key.auth_details.username.lower()
                 ]
+                set1 = set(self.final_choices)
+                set2 = set(self.items)
+                difference = list(set2 - set1)
+                for auth in difference:
+                    await auth.session_manager.active_session.close()
             case "subscriptions":
                 subscription_users = [x for x in self.items]
                 self.item_keys = [x.username for x in subscription_users]
