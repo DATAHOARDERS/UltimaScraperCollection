@@ -125,6 +125,10 @@ class DownloadManager:
                     final_size = 0
                     error = None
                     for response in responses:
+                        if download_item.drm and await self.drm_check_downloaded(
+                            download_item
+                        ):
+                            continue
                         download_path, error = await self.writer(
                             response, download_item, encrypted=bool(download_item.key)
                         )
@@ -160,9 +164,7 @@ class DownloadManager:
                         final_size = download_path.stat().st_size
                     timestamp = db_media.created_at.timestamp()
                     await main_helper.format_file(
-                        download_path,
-                        timestamp,
-                        self.reformat,
+                        download_path, timestamp, self.reformat
                     )
                     db_media.size = final_size
                     db_media.downloaded = True
@@ -195,6 +197,13 @@ class DownloadManager:
                 return download_path, None
             failed = await self.filesystem_manager.write_data(response, download_path)
             return download_path, failed
+
+    async def drm_check_downloaded(self, download_item: MediaMetadata):
+        download_path = download_item.get_filepath()
+        if download_path.exists():
+            if download_path.stat().st_size and download_item.__db_item__.size:
+                return True
+        return False
 
     async def check(self, download_item: TemplateMediaModel, response: ClientResponse):
         filepath = Path(download_item.directory, download_item.filename)
