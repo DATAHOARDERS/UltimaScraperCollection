@@ -1,6 +1,7 @@
 import asyncio
 import copy
 from pathlib import Path
+from urllib.parse import urlparse
 
 import ffmpeg
 from aiohttp import ClientResponse
@@ -98,6 +99,12 @@ class DownloadManager:
             return
         if not download_item.urls:
             return
+        matches = ["us", "uk", "ca", "ca2", "de"]
+        p_url = urlparse(download_item.urls[0])
+
+        subdomain = p_url.hostname.split(".")[0]
+        if any(subdomain in nm for nm in matches):
+            return
         download_item.__db_item__ = db_media
 
         authed = self.session_manager.auth
@@ -169,11 +176,8 @@ class DownloadManager:
                     db_media.size = final_size
                     db_media.downloaded = True
                     break
-                except asyncio.TimeoutError as e:
-                    pass
-                except Exception as e:
-                    print(e)
-                    pass
+                except asyncio.TimeoutError as _e:
+                    continue
 
     async def writer(
         self,
