@@ -8,6 +8,8 @@ import ultima_scraper_api
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
+from ultima_scraper_renamer import renamer
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -22,7 +24,6 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MetadataManager,
 )
-from ultima_scraper_renamer import renamer
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -186,6 +187,11 @@ class StreamlinedDatascraper:
                     pass
                 case _:
                     raise Exception(f"{content_type} is an invalid choice")
+        # Adding paid content and removing duplicates by id
+        if isinstance(user, ultima_scraper_api.onlyfans_classes.user_model.create_user):
+            for paid_content in await user.get_paid_contents(content_type):
+                temp_master_set.append(paid_content)
+            temp_master_set = list({getattr(obj,"id"): obj for obj in temp_master_set}.values())
         await self.process_scraped_content(
             temp_master_set, content_type, user, metadata_manager
         )
