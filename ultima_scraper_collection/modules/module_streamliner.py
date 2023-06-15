@@ -8,8 +8,6 @@ import ultima_scraper_api
 import ultima_scraper_api.classes.make_settings as make_settings
 from sqlalchemy.exc import OperationalError
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_renamer import renamer
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -24,6 +22,7 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MetadataManager,
 )
+from ultima_scraper_renamer import renamer
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -116,7 +115,13 @@ class StreamlinedDatascraper:
             [valid_user_list.add(x) for x in chat_users]
 
         if available_jobs.paid_contents:
+            from ultima_scraper_api.apis.onlyfans.classes.auth_model import (
+                AuthModel as OnlyFansAuthModel,
+            )
+
             for authed in self.datascraper.api.auths:
+                if not isinstance(authed, OnlyFansAuthModel):
+                    continue
                 paid_contents = await authed.get_paid_content()
                 if not isinstance(paid_contents, error_types):
                     for paid_content in paid_contents:
@@ -191,7 +196,9 @@ class StreamlinedDatascraper:
         if isinstance(user, ultima_scraper_api.onlyfans_classes.user_model.create_user):
             for paid_content in await user.get_paid_contents(content_type):
                 temp_master_set.append(paid_content)
-            temp_master_set = list({getattr(obj,"id"): obj for obj in temp_master_set}.values())
+            temp_master_set = list(
+                {getattr(obj, "id"): obj for obj in temp_master_set}.values()
+            )
         await self.process_scraped_content(
             temp_master_set, content_type, user, metadata_manager
         )
@@ -223,7 +230,6 @@ class StreamlinedDatascraper:
                 product(
                     master_set,
                     [subscription],
-                    [subscription_directory_manager.root_download_directory],
                     [api_type],
                 ),
             )
@@ -321,8 +327,8 @@ class StreamlinedDatascraper:
                                 ]
                                 total_media_count += len(content_metadata.medias)
                 download_manager = DownloadManager(
+                    performer.get_authed(),
                     filesystem_manager,
-                    performer.get_session_manager(),
                     final_download_set,
                     global_settings.helpers.reformat_media,
                 )
@@ -380,9 +386,8 @@ class StreamlinedDatascraper:
     ) -> tuple[bool, list[user_types]]:
         status = False
         subscriptions: list[subscription_types] = []
-        auth = await auth.login()
 
-        if auth.check_authed() and site_settings:
+        if auth.is_authed() and site_settings:
             authed = auth
             # metadata_filepath = (
             #     authed.directory_manager.profile.metadata_directory.joinpath(

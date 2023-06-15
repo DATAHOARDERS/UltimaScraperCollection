@@ -1,20 +1,19 @@
 from pathlib import Path
 from typing import Any, Union
 
-from ultima_scraper_api.apis.onlyfans.classes.auth_model import create_auth
+from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel
 from ultima_scraper_api.apis.onlyfans.classes.hightlight_model import create_highlight
 from ultima_scraper_api.apis.onlyfans.classes.message_model import create_message
 from ultima_scraper_api.apis.onlyfans.classes.post_model import create_post
 from ultima_scraper_api.apis.onlyfans.classes.story_model import create_story
 from ultima_scraper_api.apis.onlyfans.classes.user_model import create_user
 from ultima_scraper_api.apis.onlyfans.onlyfans import OnlyFansAPI
-from ultima_scraper_renamer.reformat import ReformatManager
-
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     ContentMetadata,
 )
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
+from ultima_scraper_renamer.reformat import ReformatManager
 
 
 class OnlyFansDataScraper(StreamlinedDatascraper):
@@ -28,9 +27,9 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         self,
         post_result: Union[create_story, create_post, create_message],
         subscription: create_user,
-        formatted_directory: Path,
         api_type: str,
     ) -> dict[str, Any]:
+        api_type = self.api.convert_api_type_to_key(post_result)
         authed = subscription.get_authed()
         api = authed.api
         site_settings = api.get_site_settings()
@@ -39,8 +38,6 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         new_set: dict[str, Any] = {"content": []}
         directories: list[Path] = []
         if api_type == "Stories":
-            pass
-        if api_type == "Archived":
             pass
         if api_type == "Posts":
             pass
@@ -109,17 +106,17 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
 
     async def get_all_subscriptions(
         self,
-        authed: create_auth,
+        authed: AuthModel,
         identifiers: list[int | str] = [],
         refresh: bool = True,
     ):
         """
-        get_all_subscriptions(authed: create_auth, identifiers: list[int | str] = [], refresh: bool = True)
+        get_all_subscriptions(authed: AuthModel, identifiers: list[int | str] = [], refresh: bool = True)
 
         This function returns a list of all subscriptions from the given authenticated user.
 
         Arguments:
-        authed (create_auth): An instance of the create_auth class.
+        authed (AuthModel): An instance of the AuthModel class.
         identifiers (list[int | str], optional): A list of identifiers (username or id) for the subscriptions. Defaults to an empty list.
         refresh (bool, optional): A flag indicating whether to refresh the list of subscriptions. Defaults to True.
 

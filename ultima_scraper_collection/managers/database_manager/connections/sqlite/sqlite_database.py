@@ -8,13 +8,11 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import DeclarativeBase, scoped_session, sessionmaker
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models import (
     user_database,
 )
 
 if TYPE_CHECKING:
-
     from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
         ContentMetadata,
     )
@@ -72,7 +70,6 @@ class SqliteDatabase(DeclarativeBase):
         return result
 
     def generate_migration(self):
-
         if not self.session.bind:
             return
         conn = self.session.bind.engine.connect()
@@ -94,7 +91,6 @@ class SqliteDatabase(DeclarativeBase):
     def run_migrations(self, legacy: bool = False) -> None:
         while True:
             try:
-
                 migration_directory = (
                     self.alembic_directory.parent.joinpath("migration")
                     if legacy
@@ -144,10 +140,17 @@ class SqliteDatabase(DeclarativeBase):
             if not api_table:
                 return
             post_id = post.content_id
-            created_at_string = post.created_at_string
+            post_created_at_string = post.created_at_string
             date_object = None
-            if created_at_string:
-                date_object = datetime.strptime(created_at_string, "%d-%m-%Y %H:%M:%S")
+            if post_created_at_string:
+                try:
+                    date_object = datetime.fromisoformat(post_created_at_string)
+                    pass
+                except Exception as _e:
+                    date_object = datetime.strptime(
+                        post_created_at_string, "%d-%m-%Y %H:%M:%S"
+                    )
+                    pass
             result = database_session.query(api_table)
             post_db = result.filter_by(post_id=post_id).first()
             if not post_db:
@@ -167,9 +170,12 @@ class SqliteDatabase(DeclarativeBase):
             for media in post.medias:
                 if media.media_type == "Texts":
                     continue
-                created_at = media.created_at
-                if not isinstance(created_at, datetime):
-                    date_object = datetime.strptime(created_at, "%d-%m-%Y %H:%M:%S")
+                media_created_at_string = media.created_at
+                if not isinstance(media_created_at_string, datetime):
+                    if isinstance(media_created_at_string, int):
+                        date_object = datetime.fromtimestamp(media_created_at_string)
+                    else:
+                        date_object = datetime.fromisoformat(media_created_at_string)
                 media_id = media.id
                 result = database_session.query(database.media_table)
                 media_db = result.filter_by(post_id=post_id, media_id=media_id).first()

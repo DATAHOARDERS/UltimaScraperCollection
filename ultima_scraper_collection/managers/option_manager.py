@@ -64,10 +64,10 @@ class OptionsFormat:
                     if choice.lower() == key.lower()
                 ]
             case "profiles":
-                self.item_keys = [x.auth_details.username for x in self.items]
+                self.item_keys = [x.get_auth_details().username for x in self.items]
                 my_string = " | ".join(
                     map(
-                        lambda x: f"{self.items.index(x)+1} = {x.auth_details.username}",
+                        lambda x: f"{self.items.index(x)+1} = {x.get_auth_details().username}",
                         self.items,
                     )
                 )
@@ -78,7 +78,7 @@ class OptionsFormat:
                     key
                     for choice in final_list
                     for key in self.items
-                    if choice.lower() == key.auth_details.username.lower()
+                    if choice.lower() == key.get_auth_details().username.lower()
                 ]
                 set1 = set(self.final_choices)
                 set2 = set(self.items)
@@ -181,7 +181,7 @@ class OptionsFormat:
         return status
 
     def return_auto_choice(self):
-        identifiers = []
+        identifiers: list[int | str] | int | str | bool = []
         if isinstance(self.auto_choice, list):
             identifiers = [x for x in self.auto_choice if not isinstance(x, bool)]
         return identifiers

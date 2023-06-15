@@ -5,8 +5,8 @@ from urllib.parse import urlparse
 
 import ffmpeg
 from aiohttp import ClientResponse
+from ultima_scraper_api import auth_types
 from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_api.managers.session_manager import SessionManager
 from ultima_scraper_renamer.reformat import ReformatManager
 
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
@@ -22,22 +22,21 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
 class DownloadManager:
     def __init__(
         self,
+        authed: auth_types,
         filesystem_manager: FilesystemManager,
-        session_manager: SessionManager,
         content_list: set[ContentMetadata] = set(),
         reformat: bool = True,
     ) -> None:
+        self.authed = authed
         self.filesystem_manager = filesystem_manager
-        self.session_manager = session_manager
+        self.session_manager = self.authed.session_manager
         self.content_list: set[ContentMetadata] = content_list
         self.errors: list[TemplateMediaModel] = []
         self.reformat = reformat
-        self.reformat_manager = ReformatManager(
-            session_manager.auth, filesystem_manager
-        )
+        self.reformat_manager = ReformatManager(self.authed, filesystem_manager)
 
     async def bulk_download(self):
-        final_list: list[MediaMetadata] = [
+        final_list = [
             self.download(media_item)
             for download_item in self.content_list
             for media_item in download_item.medias
@@ -46,7 +45,7 @@ class DownloadManager:
 
     async def drm_download(self, download_item: MediaMetadata):
         content_metadata = download_item.__content_metadata__
-        authed = self.session_manager.auth
+        authed = self.authed
         site_settings = authed.get_api().get_site_settings()
         reformat_manager = ReformatManager(authed, self.filesystem_manager)
         drm = authed.drm
@@ -107,7 +106,7 @@ class DownloadManager:
             return
         download_item.__db_item__ = db_media
 
-        authed = self.session_manager.auth
+        authed = self.authed
         authed_drm = authed.drm
 
         async with self.session_manager.semaphore:
@@ -173,7 +172,7 @@ class DownloadManager:
                     await main_helper.format_file(
                         download_path, timestamp, self.reformat
                     )
-                    db_media.size = final_size
+                    db_media.size = download_item.size = final_size
                     db_media.downloaded = True
                     break
                 except asyncio.TimeoutError as _e:

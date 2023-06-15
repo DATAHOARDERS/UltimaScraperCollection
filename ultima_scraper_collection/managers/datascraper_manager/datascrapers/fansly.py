@@ -1,19 +1,18 @@
 from pathlib import Path
 from typing import Any, Union
 
-from ultima_scraper_renamer.reformat import ReformatManager
-from ultima_scraper_api.apis.fansly.classes.auth_model import create_auth
+from ultima_scraper_api.apis.fansly.classes.auth_model import AuthModel
 from ultima_scraper_api.apis.fansly.classes.message_model import create_message
 from ultima_scraper_api.apis.fansly.classes.post_model import create_post
 from ultima_scraper_api.apis.fansly.classes.story_model import create_story
 from ultima_scraper_api.apis.fansly.classes.user_model import create_user
 from ultima_scraper_api.apis.fansly.fansly import FanslyAPI
-
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     ContentMetadata,
 )
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
+from ultima_scraper_renamer.reformat import ReformatManager
 
 
 class FanslyDataScraper(StreamlinedDatascraper):
@@ -27,7 +26,6 @@ class FanslyDataScraper(StreamlinedDatascraper):
         self,
         post_result: Union[create_story, create_post, create_message],
         subscription: create_user,
-        formatted_directory: Path,
         api_type: str,
     ) -> dict[str, Any]:
         authed = subscription.get_authed()
@@ -103,18 +101,18 @@ class FanslyDataScraper(StreamlinedDatascraper):
 
     async def get_all_subscriptions(
         self,
-        authed: create_auth,
+        authed: AuthModel,
         identifiers: list[int | str] = [],
         refresh: bool = True,
     ):
         """
-        get_all_subscriptions(authed: create_auth, identifiers: list[int | str] = [], refresh: bool = True)
+        get_all_subscriptions(authed: AuthModel, identifiers: list[int | str] = [], refresh: bool = True)
 
         This function returns a list of all subscriptions, including both subscriptions and followings,
         from the given authenticated user.
 
         Arguments:
-        authed (create_auth): An instance of the create_auth class.
+        authed (AuthModel): An instance of the AuthModel class.
         identifiers (list[int | str], optional): A list of identifiers (username or id) for the subscriptions. Defaults to an empty list.
         refresh (bool, optional): A flag indicating whether to refresh the list of subscriptions. Defaults to True.
 

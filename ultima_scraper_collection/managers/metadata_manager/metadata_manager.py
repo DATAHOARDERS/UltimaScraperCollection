@@ -5,7 +5,6 @@ from urllib.parse import ParseResult, urlparse
 
 import ultima_scraper_api
 from sqlalchemy import inspect
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
     SqliteDatabase,
@@ -20,7 +19,6 @@ user_types = ultima_scraper_api.user_types
 content_types = ultima_scraper_api.content_types
 from ultima_scraper_api.classes.prepare_metadata import format_content
 from ultima_scraper_api.helpers import main_helper
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
     ApiModel,
 )
@@ -106,21 +104,26 @@ class Extractor:
 
     def get_date(self):
         temp_date = self.item.createdAt
-        default_date = datetime.strftime(datetime.utcnow(), "%d-%m-%Y %H:%M:%S")
+        assert temp_date
+        if isinstance(temp_date, str):
+            try:
+                temp_date = float(temp_date)
+            except:
+                pass
+        default_date = datetime.utcnow()
         if temp_date == "-001-11-30T00:00:00+00:00":
-            final_date_string = default_date
-            date_object = datetime.strptime(default_date, "%d-%m-%Y %H:%M:%S")
+            date_object = default_date
         else:
             if not temp_date:
                 temp_date = default_date
             if isinstance(temp_date, int):
                 timestamp = float(temp_date)
                 date_object = datetime.fromtimestamp(timestamp)
+            elif isinstance(temp_date, float):
+                date_object = datetime.fromtimestamp(temp_date)
             else:
                 date_object = datetime.fromisoformat(temp_date)
-            final_date_string = date_object.replace(tzinfo=None).strftime(
-                "%d-%m-%Y %H:%M:%S"
-            )
+        final_date_string = date_object.isoformat()
         return final_date_string
 
     def get_medias(self, content_metadata: "ContentMetadata"):
@@ -131,11 +134,15 @@ class Extractor:
                 raw_media_type: str = asset_metadata["mimetype"].split("/")[0]
             author = self.item.get_author()
             media_type = author.get_api().MediaTypes().find_by_value(raw_media_type)
+            if "createdAt" in asset_metadata:
+                media_created_at = asset_metadata["createdAt"]
+            else:
+                media_created_at = content_metadata.created_at_string
             new_asset = MediaMetadata(
                 asset_metadata["id"],
                 media_type,
                 content_metadata,
-                created_at=content_metadata.created_at_string,
+                created_at=media_created_at,
             )
             main_url = self.item.url_picker(asset_metadata)
             preview_url = self.item.preview_url_picker(asset_metadata)
@@ -391,7 +398,25 @@ class MetadataManager:
                     # merged = merge_statuses(new_metadata_set)
                     # for item in merged:
                     #     directory_set.add(item["directory"])
-                    final_content_type = new_metadata_set["content_type"]
+                    if (
+                        "type" in new_metadata_set
+                        and "content_type" not in new_metadata_set
+                    ):
+                        item = new_metadata_set["valid"][0]
+                        directory = item["directory"]
+                        content_types = self.subscription.get_api().ContentTypes()
+                        temp_content_type = content_types.path_to_key(Path(directory))
+                        if all(
+                            temp_content_type
+                            == content_types.path_to_key(Path(item["directory"]))
+                            for item in new_metadata_set["valid"]
+                        ):
+                            final_content_type = temp_content_type
+                    else:
+                        final_content_type = new_metadata_set["content_type"]
+            assert (
+                final_content_type
+            ), "Content type (Posts,etc) not set before fixing JSON"
             final_metadata_set = {}
             content_json = {}
             if isinstance(new_metadata_set, list):
