@@ -7,16 +7,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Literal
 
+from ultima_scraper_api.classes.prepare_metadata import format_attributes
 import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
-from ultima_scraper_api.classes.prepare_directories import FormatTypes
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
 from ultima_scraper_renamer.reformat import ReformatItem
 
+
 if TYPE_CHECKING:
     api_types = ultima_scraper_api.api_types
     user_types = ultima_scraper_api.user_types
+    from ultima_scraper_collection import datascraper_types
+    from ultima_scraper_collection.config import site_config_types
 
 
 class FilesystemManager:
@@ -25,7 +28,7 @@ class FilesystemManager:
         self.trash_directory = self.user_data_directory.joinpath("trash")
         self.profiles_directory = self.user_data_directory.joinpath("profiles")
         self.devices_directory = self.user_data_directory.joinpath("devices")
-        self.settings_directory = Path("__settings__")
+        self.settings_directory = Path("__user_data__")
         self.ignore_files = ["desktop.ini", ".DS_Store", ".DS_store", "@eaDir"]
         self.directory_manager: DirectoryManager | None = None
         self.directory_manager_users: dict[int, DirectoryManager] = {}
@@ -57,18 +60,17 @@ class FilesystemManager:
     def get_file_manager(self, user_id: int):
         return self.file_manager_users[user_id]
 
-    def activate_directory_manager(self, api: api_types):
-        from ultima_scraper_api.helpers import main_helper
+    def activate_directory_manager(self, site_config: site_config_types):
+        from ultima_scraper_collection.helpers import main_helper
 
-        site_settings = api.get_site_settings()
         root_metadata_directory = main_helper.check_space(
-            site_settings.metadata_directories
+            site_config.metadata_setup.directories
         )
         root_download_directory = main_helper.check_space(
-            site_settings.download_directories
+            site_config.download_setup.directories
         )
         self.directory_manager = DirectoryManager(
-            site_settings,
+            site_config,
             root_metadata_directory,
             root_download_directory,
         )
@@ -117,13 +119,16 @@ class FilesystemManager:
             status_code = 2
         return status_code
 
-    async def create_directory_manager(self, api: api_types, user: user_types):
+    async def create_directory_manager(
+        self, datascraper: datascraper_types, user: user_types
+    ):
         # profile_directory = filesystem_directory_manager.profile.root_directory.joinpath(
         #     self.username
         # )
+        api = datascraper.api
         if self.directory_manager:
             directory_manager = DirectoryManager(
-                api.get_site_settings(),
+                datascraper.site_config,
                 self.directory_manager.root_metadata_directory,
                 self.directory_manager.root_download_directory,
             )
@@ -150,67 +155,61 @@ class FilesystemManager:
 
     async def format_directories(self, subscription: user_types) -> DirectoryManager:
         directory_manager = self.get_directory_manager(subscription.id)
+        site_config = directory_manager.site_config
         file_manager = self.get_file_manager(subscription.id)
         authed = subscription.get_authed()
         api = authed.api
-        site_settings = authed.api.get_site_settings()
-        if site_settings:
-            authed_username = authed.username
-            subscription_username = subscription.username
-            site_name = authed.api.site_name
-            reformat_item = ReformatItem()
-            reformat_item.site_name = site_name
-            reformat_item.profile_username = authed_username
-            reformat_item.model_username = subscription_username
-            reformat_item.date = datetime.today()
-            reformat_item.date_format = site_settings.date_format
-            reformat_item.text_length = site_settings.text_length
-            reformat_item.directory = directory_manager.root_metadata_directory
-            string = reformat_item.reformat(site_settings.metadata_directory_format)
-            directory_manager.user.metadata_directory = Path(string)
-            reformat_item_2 = copy.copy(reformat_item)
-            reformat_item_2.directory = directory_manager.root_download_directory
-            string = reformat_item_2.reformat(site_settings.file_directory_format)
-            formtatted_root_download_directory = reformat_item_2.remove_non_unique(
-                directory_manager, "file_directory_format"
-            )
-            directory_manager.user.download_directory = (
-                formtatted_root_download_directory
-            )
-            await file_manager.set_default_files(reformat_item, reformat_item_2)
-            _metadata_filepaths = await file_manager.find_metadata_files(
-                legacy_files=False
-            )
-            # I forgot why we need to set default file twice
-            await file_manager.set_default_files(reformat_item, reformat_item_2)
-            user_metadata_directory = directory_manager.user.metadata_directory
-            _user_download_directory = directory_manager.user.download_directory
-            legacy_metadata_directory = user_metadata_directory
+        authed_username = authed.username
+        subscription_username = subscription.username
+        site_name = authed.api.site_name
+        reformat_item = ReformatItem()
+        reformat_item.site_name = site_name
+        reformat_item.profile_username = authed_username
+        reformat_item.model_username = subscription_username
+        reformat_item.date = datetime.today()
+        download_setup = site_config.download_setup
+        reformat_item.date_format = download_setup.date_format
+        reformat_item.text_length = download_setup.text_length
+        reformat_item.directory = directory_manager.root_metadata_directory
+        metadata_setup = site_config.metadata_setup
+        string = reformat_item.reformat(metadata_setup.directory_format)
+        directory_manager.user.metadata_directory = Path(string)
+        reformat_item_2 = copy.copy(reformat_item)
+        reformat_item_2.directory = directory_manager.root_download_directory
+        string = reformat_item_2.reformat(metadata_setup.directory_format)
+        formtatted_root_download_directory = reformat_item_2.remove_non_unique(
+            directory_manager, "file_directory_format"
+        )
+        directory_manager.user.download_directory = formtatted_root_download_directory
+        await file_manager.set_default_files(reformat_item, reformat_item_2)
+        _metadata_filepaths = await file_manager.find_metadata_files(legacy_files=False)
+        # I forgot why we need to set default file twice
+        await file_manager.set_default_files(reformat_item, reformat_item_2)
+        user_metadata_directory = directory_manager.user.metadata_directory
+        _user_download_directory = directory_manager.user.download_directory
+        legacy_metadata_directory = user_metadata_directory
+        directory_manager.user.legacy_metadata_directories.append(
+            legacy_metadata_directory
+        )
+        items = api.ContentTypes().__dict__.items()
+        for api_type, _ in items:
+            legacy_metadata_directory_2 = user_metadata_directory.joinpath(api_type)
             directory_manager.user.legacy_metadata_directories.append(
-                legacy_metadata_directory
+                legacy_metadata_directory_2
             )
-            items = api.ContentTypes().__dict__.items()
-            for api_type, _ in items:
-                legacy_metadata_directory_2 = user_metadata_directory.joinpath(api_type)
-                directory_manager.user.legacy_metadata_directories.append(
-                    legacy_metadata_directory_2
-                )
-            legacy_model_directory = directory_manager.root_download_directory.joinpath(
-                site_name, subscription_username
-            )
-            directory_manager.user.legacy_download_directories.append(
-                legacy_model_directory
-            )
+        legacy_model_directory = directory_manager.root_download_directory.joinpath(
+            site_name, subscription_username
+        )
+        directory_manager.user.legacy_download_directories.append(
+            legacy_model_directory
+        )
         return directory_manager
-
-
-from ultima_scraper_api.classes.make_settings import SiteSettings
 
 
 class DirectoryManager:
     def __init__(
         self,
-        site_settings: SiteSettings,
+        site_config: site_config_types,
         root_metadata_directory: Path = Path(),
         root_download_directory: Path = Path(),
     ) -> None:
@@ -219,7 +218,8 @@ class DirectoryManager:
         self.root_download_directory = Path(root_download_directory)
         # self.profile = self.ProfileDirectories(Path(profile_directory))
         self.user = self.UserDirectories()
-        formats = FormatTypes(site_settings)
+        self.site_config = site_config
+        formats = FormatTypes(site_config)
         string, status = formats.check_rules()
         if not status:
             print(string)

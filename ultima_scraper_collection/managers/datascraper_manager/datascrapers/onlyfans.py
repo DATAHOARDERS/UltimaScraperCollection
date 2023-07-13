@@ -1,40 +1,52 @@
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any
 
-from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel
-from ultima_scraper_api.apis.onlyfans.classes.hightlight_model import create_highlight
-from ultima_scraper_api.apis.onlyfans.classes.message_model import create_message
-from ultima_scraper_api.apis.onlyfans.classes.post_model import create_post
-from ultima_scraper_api.apis.onlyfans.classes.story_model import create_story
-from ultima_scraper_api.apis.onlyfans.classes.user_model import create_user
 from ultima_scraper_api.apis.onlyfans.onlyfans import OnlyFansAPI
+from ultima_scraper_renamer.reformat import ReformatManager
+
+from ultima_scraper_collection.config import Sites
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     ContentMetadata,
+    ApiExtractor,
 )
 from ultima_scraper_collection.managers.option_manager import OptionManager
+from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
-from ultima_scraper_renamer.reformat import ReformatManager
+
+if TYPE_CHECKING:
+    from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel
+    from ultima_scraper_api.apis.onlyfans.classes.hightlight_model import (
+        create_highlight,
+    )
+    from ultima_scraper_api.apis.onlyfans.classes.message_model import create_message
+    from ultima_scraper_api.apis.onlyfans.classes.post_model import create_post
+    from ultima_scraper_api.apis.onlyfans.classes.story_model import create_story
+    from ultima_scraper_api.apis.onlyfans.classes.user_model import create_user
 
 
 class OnlyFansDataScraper(StreamlinedDatascraper):
-    def __init__(self, api: OnlyFansAPI, option_manager: OptionManager) -> None:
+    def __init__(
+        self,
+        api: OnlyFansAPI,
+        option_manager: OptionManager,
+        server_manager: ServerManager,
+        site_config: Sites.OnlyFansAPIConfig,
+    ) -> None:
         self.api = api
         self.option_manager = option_manager
-        StreamlinedDatascraper.__init__(self, self)
+        self.site_config = site_config
+        StreamlinedDatascraper.__init__(self, self, server_manager)
 
     # Scrapes the API for content
     async def media_scraper(
         self,
-        post_result: Union[create_story, create_post, create_message],
-        subscription: create_user,
+        content_result: "create_story | create_post | create_message",
+        subscription: "create_user",
         api_type: str,
     ) -> dict[str, Any]:
-        api_type = self.api.convert_api_type_to_key(post_result)
+        api_type = self.api.convert_api_type_to_key(content_result)
         authed = subscription.get_authed()
-        api = authed.api
-        site_settings = api.get_site_settings()
-        if not site_settings:
-            return {}
+        site_config = self.site_config
         new_set: dict[str, Any] = {"content": []}
         directories: list[Path] = []
         if api_type == "Stories":
@@ -43,27 +55,20 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             pass
         if api_type == "Messages":
             pass
-        from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-            Extractor,
-        )
 
-        content_metadata = ContentMetadata(post_result.id, api_type)
-        content_metadata.resolve_extractor(Extractor(post_result))
-        matches = [
-            s for s in site_settings.ignored_keywords if s in content_metadata.text
-        ]
-        if matches:
-            print("Ignoring - ", f"PostID: {content_metadata.content_id}")
-            return {}
+        content_metadata = ContentMetadata(content_result.id, api_type)
+        await content_metadata.resolve_extractor(ApiExtractor(content_result))
         for asset in content_metadata.medias:
             if asset.urls:
                 reformat_manager = ReformatManager(authed, self.filesystem_manager)
                 reformat_item = reformat_manager.prepare_reformat(asset)
                 file_directory = reformat_item.reformat(
-                    site_settings.file_directory_format
+                    site_config.download_setup.directory_format
                 )
                 reformat_item.directory = file_directory
-                file_path = reformat_item.reformat(site_settings.filename_format)
+                file_path = reformat_item.reformat(
+                    site_config.download_setup.filename_format
+                )
                 asset.directory = file_directory
                 asset.filename = file_path.name
 
@@ -73,7 +78,7 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         new_set["directories"] = directories
         return new_set
 
-    async def get_all_stories(self, subscription: create_user):
+    async def get_all_stories(self, subscription: "create_user"):
         """
         get_all_stories(subscription: create_user)
 
@@ -98,7 +103,7 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         master_set.extend(valid_highlights)
         return master_set
 
-    async def get_all_posts(self, subscription: create_user):
+    async def get_all_posts(self, subscription: "create_user"):
         temp_master_set = await subscription.get_posts()
         # get_archived_posts uses normal posts
         await subscription.get_archived_posts()
@@ -106,7 +111,7 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
 
     async def get_all_subscriptions(
         self,
-        authed: AuthModel,
+        authed: "AuthModel",
         identifiers: list[int | str] = [],
         refresh: bool = True,
     ):

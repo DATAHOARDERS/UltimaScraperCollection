@@ -1,5 +1,5 @@
 from typing import Any
-
+from ultima_scraper_collection.config import auto_types
 
 class OptionManager:
     def __init__(self) -> None:
@@ -11,7 +11,7 @@ class OptionManager:
         self,
         items: list[Any],
         options_type: str,
-        auto_choice: list[int | str] | int | str | bool = False,
+        auto_choice: auto_types = False,
     ):
         option = await OptionsFormat(items, options_type, auto_choice).formatter()
         return option
@@ -22,7 +22,7 @@ class OptionsFormat:
         self,
         items: list[Any],
         options_type: str,
-        auto_choice: list[int | str] | int | str | bool = False,
+        auto_choice: auto_types = False,
     ) -> None:
         self.items = items
         self.item_keys: list[str] = []
@@ -34,19 +34,19 @@ class OptionsFormat:
     async def formatter(self):
         options_type = self.options_type
         final_string = f"Choose {options_type.capitalize()}: 0 = All"
-        if type(self.auto_choice) == int:
-            self.auto_choice = str(self.auto_choice)
+        auto_choice = self.auto_choice
+        if type(auto_choice) == int:
+            auto_choice = str(auto_choice)
 
-        if isinstance(self.auto_choice, str):
-            self.auto_choice = [x for x in self.auto_choice.split(",") if x]
-            self.auto_choice = (
-                True
-                if any(x in ["0", "all"] for x in self.auto_choice)
-                else self.auto_choice
+        if isinstance(auto_choice, str):
+            auto_choice = [x for x in auto_choice.split(",") if x]
+            auto_choice = (
+                True if any(x in ["0", "all"] for x in auto_choice) else auto_choice
             )
 
-        if isinstance(self.auto_choice, list):
-            self.auto_choice = [x for x in self.auto_choice if x]
+        if isinstance(auto_choice, list):
+            auto_choice = [x for x in auto_choice if x]
+        self.auto_choice = auto_choice
 
         match options_type:
             case "sites":

@@ -1,10 +1,25 @@
+import mimetypes
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import ParseResult, urlparse
 
 import ultima_scraper_api
 from sqlalchemy import inspect
+from ultima_scraper_api.helpers import main_helper
+from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+    MediaModel as DBMediaModel,
+)
+from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+    MessageModel as DBMessageModel,
+)
+from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+    PostModel as DBPostModel,
+)
+from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+    StoryModel as DBStoryModel,
+)
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
     SqliteDatabase,
@@ -17,27 +32,24 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
 content_types = ultima_scraper_api.content_types
-from ultima_scraper_api.classes.prepare_metadata import format_content
-from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.api_model import (
-    ApiModel,
-)
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.user_database import (
-    messages_table,
-)
 
 
-class MetadataExtractor:
-    def __init__(self, post_item: format_content.post_item) -> None:
-        self.item = post_item
+class DBContentExtractor:
+    def __init__(
+        self, content_item: DBMessageModel | DBPostModel | DBStoryModel
+    ) -> None:
+        self.item = content_item
+        self.__api__: api_types | None = None
 
     def get_id(self):
-        return self.item.post_id
+        return self.item.id
 
     def get_user_id(self):
-        return None
+        return self.item.user_id
 
     def get_text(self):
+        if isinstance(self.item, DBStoryModel):
+            return None
         return self.item.text
 
     def get_preview_ids(self):
@@ -48,33 +60,60 @@ class MetadataExtractor:
         return False
 
     def get_date(self):
-        return self.item.createdAt
+        return self.item.created_at
 
-    def get_medias(self, content_metadata: "ContentMetadata"):
+    async def get_medias(self, content_metadata: "ContentMetadata"):
         final_assets: list[MediaMetadata] = []
-        for media in self.item.medias:
+        for media_item in self.item.media:
+            if not media_item.category:
+                from urllib.parse import urlparse
+
+                if not media_item.url:
+                    continue
+                parsed_url = urlparse(media_item.url)
+                path_ = parsed_url.path
+                type_, _encoding = mimetypes.guess_type(path_)
+                media_type = None
+                if type_:
+                    media_type, _subtype = type_.split("/")
+                assert media_type and self.__api__
+                true_media_type = self.__api__.MediaTypes().find_by_value(media_type)
+                pass
+            else:
+                true_media_type = media_item.category
+
             new_asset = MediaMetadata(
-                media.media_id,
-                media.media_type,
+                media_item.id,
+                true_media_type,
                 content_metadata,
-                created_at=content_metadata.created_at_string,
+                created_at=content_metadata.created_at,
             )
-            new_asset.urls = media.links
-            new_asset.directory = media.directory
-            new_asset.filename = media.filename
-            new_asset.size = media.size
+            new_asset.urls = [media_item.url]
+            filepath = await media_item.find_filepath(
+                content_metadata.content_id, content_metadata.api_type
+            )
+            if filepath:
+                pathed_filepath = Path(filepath.filepath)
+                new_asset.directory = pathed_filepath.parent
+                new_asset.filename = pathed_filepath.name
+            else:
+                pass
+            new_asset.size = media_item.size
             final_assets.append(new_asset)
         return final_assets
 
     def resolve_paid(self):
-        return self.item.paid
+        if not hasattr(self.item, "paid"):
+            return None
+        if isinstance(self.item, DBPostModel | DBMessageModel):
+            return self.item.paid
 
     def get_receiver_id(self):
-        if isinstance(self.item, messages_table):
-            return
+        if isinstance(self.item, DBMessageModel):
+            return self.item.receiver_id
 
 
-class Extractor:
+class ApiExtractor:
     def __init__(self, item: content_types) -> None:
         self.item = item
 
@@ -103,7 +142,7 @@ class Extractor:
         return final_preview_ids
 
     def get_date(self):
-        temp_date = self.item.createdAt
+        temp_date = self.item.created_at
         assert temp_date
         if isinstance(temp_date, str):
             try:
@@ -121,12 +160,13 @@ class Extractor:
                 date_object = datetime.fromtimestamp(timestamp)
             elif isinstance(temp_date, float):
                 date_object = datetime.fromtimestamp(temp_date)
-            else:
+            elif isinstance(temp_date, str):
                 date_object = datetime.fromisoformat(temp_date)
-        final_date_string = date_object.isoformat()
-        return final_date_string
+            else:
+                date_object = temp_date
+        return date_object
 
-    def get_medias(self, content_metadata: "ContentMetadata"):
+    async def get_medias(self, content_metadata: "ContentMetadata"):
         final_assets: list[MediaMetadata] = []
         for asset_metadata in self.item.media:
             raw_media_type = asset_metadata["type"]
@@ -135,9 +175,16 @@ class Extractor:
             author = self.item.get_author()
             media_type = author.get_api().MediaTypes().find_by_value(raw_media_type)
             if "createdAt" in asset_metadata:
-                media_created_at = asset_metadata["createdAt"]
+                if isinstance(asset_metadata["createdAt"], str):
+                    media_created_at = datetime.fromisoformat(
+                        asset_metadata["createdAt"]
+                    )
+                else:
+                    media_created_at = datetime.fromtimestamp(
+                        asset_metadata["createdAt"]
+                    )
             else:
-                media_created_at = content_metadata.created_at_string
+                media_created_at = content_metadata.created_at
             new_asset = MediaMetadata(
                 asset_metadata["id"],
                 media_type,
@@ -179,7 +226,9 @@ class Extractor:
         if getattr(self.item, "price", 0):
             if all(media["canView"] for media in self.item.media):
                 return True
-        return False
+            return False
+        else:
+            return None
 
     def get_receiver_id(self):
         if isinstance(self.item, ultima_scraper_api.message_types):
@@ -191,42 +240,34 @@ class ContentMetadata:
         self.content_id = content_id
         self.user_id: int | None = None
         self.receiver_id: int | None = None
-        self.text: str = ""
+        self.text: str | None = None
         self.preview_media_ids: list[int] | list[dict[str, Any]] = []
         self.archived: bool = False
-        self.created_at_string: str = ""
         self.medias: list[MediaMetadata] = []
         self.api_type = api_type
         self.price: float | None = None
-        self.paid: bool = False
+        self.paid: bool | None = False
         self.deleted: bool = False
         self.__raw__: Any | None = None
         self.__soft__: Any = None
-        self.__db_content__: ApiModel | None = None
+        self.__db_content__: DBStoryModel | DBPostModel | DBMessageModel | None = None
         self.__legacy__ = False
 
-    def resolve_extractor(self, result: Extractor | MetadataExtractor):
+    async def resolve_extractor(self, result: ApiExtractor | DBContentExtractor):
         self.content_id = result.get_id()
         self.user_id = result.get_user_id()
         self.receiver_id = result.get_receiver_id()
         self.text = result.get_text()
         self.preview_media_ids = result.get_preview_ids()
         self.archived = result.resolve_archived()
-        self.created_at_string = result.get_date()
-        self.medias: list[MediaMetadata] = result.get_medias(self)
+        self.medias: list[MediaMetadata] = await result.get_medias(self)
         self.price = getattr(result.item, "price", 0) or 0
         self.paid = result.resolve_paid()
         self.deleted = False
+        self.created_at: datetime = result.get_date()
         self.__raw__: Any | None = None
         self.__soft__ = result.item
-
-    def add_media(
-        self, media_id: int, media_type: str, urls: list[str], preview: bool = False
-    ):
-        urls = [url for url in urls if url]
-        new_media = MediaMetadata(media_id, media_type, urls, preview, self.created_at)
-        self.medias.append(new_media)
-        return new_media
+        self.__media_types__ = None
 
     def find_media(self, media_id: int | None = None, urls: list[str] = []):
         for asset in self.medias:
@@ -256,12 +297,12 @@ class ContentMetadata:
 class MediaMetadata:
     def __init__(
         self,
-        media_id: int,
+        media_id: int | None,
         media_type: str,
         content_metadata: ContentMetadata,
         urls: list[str] = [],
         preview: bool = False,
-        created_at: str = "",
+        created_at: datetime = ...,
         drm: bool = False,
     ) -> None:
         self.id = int(media_id) if media_id is not None else None
@@ -274,9 +315,10 @@ class MediaMetadata:
         self.linked = None
         self.drm = drm
         self.key: str = ""
-        self.created_at = created_at or content_metadata.created_at_string
+        self.created_at = created_at or content_metadata.created_at
         self.__raw__: Any | None = None
         self.__content_metadata__ = content_metadata
+        self.__db_media__: DBMediaModel | None = None
 
     def find_by_url(self, url: ParseResult):
         for media_url in self.urls:
@@ -362,7 +404,7 @@ class MetadataManager:
         self.metadatas = self.find_metadatas()
 
     def fix_json(self):
-        def merge_statuses(unmerged_status):
+        def merge_statuses(unmerged_status: dict[str, Any]):
             merged_status: list[dict[str, Any]] = [
                 val for lst in unmerged_status.values() for val in lst
             ]
@@ -376,7 +418,9 @@ class MetadataManager:
                 continue
             final_content_type = None
             archive = False
-            new_metadata_set = main_helper.import_json(metadata_filepath)
+            new_metadata_set: list[dict[str, Any]] | dict[
+                str, Any
+            ] = main_helper.import_json(metadata_filepath)
             content_types = self.subscription.get_api().ContentTypes().get_keys()
             final_stem = metadata_filepath.stem
             if final_stem[-1].isdigit():
@@ -398,30 +442,32 @@ class MetadataManager:
                     # merged = merge_statuses(new_metadata_set)
                     # for item in merged:
                     #     directory_set.add(item["directory"])
-                    if (
-                        "type" in new_metadata_set
-                        and "content_type" not in new_metadata_set
-                    ):
-                        item = new_metadata_set["valid"][0]
-                        directory = item["directory"]
-                        content_types = self.subscription.get_api().ContentTypes()
-                        temp_content_type = content_types.path_to_key(Path(directory))
-                        if all(
-                            temp_content_type
-                            == content_types.path_to_key(Path(item["directory"]))
-                            for item in new_metadata_set["valid"]
+                    if isinstance(new_metadata_set, dict):
+                        if (
+                            "type" in new_metadata_set
+                            and "content_type" not in new_metadata_set
                         ):
-                            final_content_type = temp_content_type
-                    else:
-                        final_content_type = new_metadata_set["content_type"]
+                            item = new_metadata_set["valid"][0]
+                            directory = item["directory"]
+                            content_types = self.subscription.get_api().ContentTypes()
+                            temp_content_type = content_types.path_to_key(
+                                Path(directory)
+                            )
+                            if all(
+                                temp_content_type
+                                == content_types.path_to_key(Path(item["directory"]))
+                                for item in new_metadata_set["valid"]
+                            ):
+                                final_content_type = temp_content_type
+                        else:
+                            final_content_type = new_metadata_set["content_type"]
             assert (
                 final_content_type
             ), "Content type (Posts,etc) not set before fixing JSON"
+
             final_metadata_set = {}
             content_json = {}
             if isinstance(new_metadata_set, list):
-                if len(new_metadata_set) > 1:
-                    pass
                 for temp_set in new_metadata_set:
                     content_json[temp_set["type"]] = {
                         "valid": temp_set["valid"],
@@ -444,7 +490,13 @@ class MetadataManager:
                 pass
             elif "type" in new_metadata_set:
                 # Usually means there's another json file we'd have to merge into this, like Images.json and Videos.json.
-                temp_content_json = {
+
+                class MetadataType(TypedDict):
+                    version: float | None
+                    content_type: str
+                    content: dict[str, Any]
+
+                temp_content_json: MetadataType = {
                     "version": 2.0,
                     "content_type": final_content_type,
                     "content": {},
@@ -460,7 +512,7 @@ class MetadataManager:
                 content_json = new_metadata_set.get("content", new_metadata_set)
             if final_metadata_set:
                 final_metadata_set["content_type"] = final_content_type
-                main_helper.export_json(final_metadata_set, metadata_filepath)
+                main_helper.export_json(final_metadata_set.__dict__, metadata_filepath)
             for media_type, status in content_json.items():
                 merged_status = merge_statuses(status)
                 if merged_status:
@@ -472,7 +524,7 @@ class MetadataManager:
                             content_metadata: ContentMetadata, item_json: dict[str, Any]
                         ):
                             content_metadata.__legacy__ = True
-                            content_metadata.created_at_string = item_json["postedAt"]
+                            content_metadata.created_at = item_json["postedAt"]
                             content_metadata.paid = item_json.get("paid", False)
                             content_metadata.price = item_json.get("price", 0)
                             content_metadata.text = item_json["text"]
@@ -531,43 +583,6 @@ class MetadataManager:
 
         return self.legacy_content_metadatas
 
-    def fix_sqlite(self):
-        subscription = self.subscription
-        if not self.db_manager:
-            raise Exception("DatabaseManager has not been assigned")
-
-        api = subscription.get_api()
-        site_settings = api.get_site_settings()
-        config = api.config
-        if not (config and site_settings):
-            return
-        # We could put this in process_legacy_metadata
-        legacy_db_manager = DatabaseManager().get_sqlite_db(
-            legacy_metadata_path, legacy=True
-        )
-
-        final_result = legacy_db_manager.legacy_sqlite_updater(api_type, subscription)
-        for metadata in final_result:
-            content_metadata = ContentMetadata(metadata.post_id, api_type)
-            augh = content_metadata.resolve_extractor(MetadataExtractor(metadata))
-            pass
-        new_metadata_object.extend(final_result)
-        return new_metadata_object
-
-    def delete_metadatas(self):
-        for legacy_metadata in self.redundant_metadatas:
-            if self.subscription.get_api().get_site_settings().delete_legacy_metadata:
-                legacy_metadata.unlink()
-            else:
-                if legacy_metadata.exists():
-                    new_filepath = Path(
-                        legacy_metadata.parent,
-                        "__legacy__",
-                        legacy_metadata.name,
-                    )
-                    new_filepath.parent.mkdir(exist_ok=True)
-                    legacy_metadata.rename(new_filepath)
-
     async def fix_archived_db(
         self,
     ):
@@ -616,7 +631,7 @@ class MetadataManager:
                         for item in archived_result:
                             result2 = (
                                 modern_database_session.query(table_name)
-                                .filter(table_name.post_id == item.post_id)
+                                .filter(table_name.post_id == item.post_id)  # type: ignore
                                 .first()
                             )
                             if not result2:

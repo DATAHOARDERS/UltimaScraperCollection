@@ -46,8 +46,9 @@ class DownloadManager:
     async def drm_download(self, download_item: MediaMetadata):
         content_metadata = download_item.__content_metadata__
         authed = self.authed
-        site_settings = authed.get_api().get_site_settings()
         reformat_manager = ReformatManager(authed, self.filesystem_manager)
+        assert reformat_manager.filesystem_manager.directory_manager
+        site_config = reformat_manager.filesystem_manager.directory_manager.site_config
         drm = authed.drm
         media_item = download_item.__raw__
         assert drm and media_item
@@ -69,9 +70,13 @@ class DownloadManager:
             ]
             download_item.urls = [video_url]
             reformat_item = reformat_manager.prepare_reformat(download_item)
-            file_directory = reformat_item.reformat(site_settings.file_directory_format)
+            file_directory = reformat_item.reformat(
+                site_config.download_setup.directory_format
+            )
             reformat_item.directory = file_directory
-            file_path = reformat_item.reformat(site_settings.filename_format)
+            file_path = reformat_item.reformat(
+                site_config.download_setup.filename_format
+            )
             download_item.directory = file_directory
             download_item.filename = file_path.name
             for media_url in video_url, audio_url:
@@ -91,20 +96,28 @@ class DownloadManager:
         attempt = 0
         content_metadata = download_item.__content_metadata__
         db_content = content_metadata.__db_content__
-        if not db_content or not download_item.id:
-            return
-        db_media = db_content.find_media(download_item.id)
-        if not db_media:
-            return
         if not download_item.urls:
             return
+        db_media = None
+        db_filepath = None
+        if db_content:
+            assert download_item.id
+            db_media = await db_content.find_media(download_item.id)
+            if not db_media:
+                return
+            db_filepath = await db_media.find_filepath(
+                db_content.id, content_metadata.api_type
+            )
+            assert db_filepath
+            db_filepath.preview = download_item.preview
+
         matches = ["us", "uk", "ca", "ca2", "de"]
         p_url = urlparse(download_item.urls[0])
 
         subdomain = p_url.hostname.split(".")[0]
         if any(subdomain in nm for nm in matches):
             return
-        download_item.__db_item__ = db_media
+        download_item.__db_media__ = db_media
 
         authed = self.authed
         authed_drm = authed.drm
@@ -172,8 +185,13 @@ class DownloadManager:
                     await main_helper.format_file(
                         download_path, timestamp, self.reformat
                     )
-                    db_media.size = download_item.size = final_size
-                    db_media.downloaded = True
+                    if db_media and db_filepath:
+                        if not db_filepath.preview:
+                            db_media.size = download_item.size = final_size
+                        else:
+                            if final_size > db_media.size:
+                                db_media.size = final_size
+                        db_filepath.downloaded = True
                     break
                 except asyncio.TimeoutError as _e:
                     continue
@@ -192,7 +210,7 @@ class DownloadManager:
                 )
             assert download_item.directory and download_item.filename
             download_path = Path(download_item.directory, download_item.filename)
-            db_media = copy.copy(download_item.__db_item__)
+            db_media = copy.copy(download_item.__db_media__)
             db_media.directory = download_item.directory
             db_media.filename = download_item.filename
             download = await self.check(db_media, response)
@@ -204,7 +222,7 @@ class DownloadManager:
     async def drm_check_downloaded(self, download_item: MediaMetadata):
         download_path = download_item.get_filepath()
         if download_path.exists():
-            if download_path.stat().st_size and download_item.__db_item__.size:
+            if download_path.stat().st_size and download_item.__db_media__.size:
                 return True
         return False
 
