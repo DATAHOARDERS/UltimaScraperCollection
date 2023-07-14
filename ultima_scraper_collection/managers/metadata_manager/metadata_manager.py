@@ -7,6 +7,14 @@ from urllib.parse import ParseResult, urlparse
 import ultima_scraper_api
 from sqlalchemy import inspect
 from ultima_scraper_api.helpers import main_helper
+from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
+    DBCollection,
+    SqliteDatabase,
+)
+from ultima_scraper_collection.managers.database_manager.database_manager import (
+    DatabaseManager,
+)
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 from ultima_scraper_db.databases.ultima.schemas.templates.site import (
     MediaModel as DBMediaModel,
 )
@@ -19,15 +27,6 @@ from ultima_scraper_db.databases.ultima.schemas.templates.site import (
 from ultima_scraper_db.databases.ultima.schemas.templates.site import (
     StoryModel as DBStoryModel,
 )
-
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
-    DBCollection,
-    SqliteDatabase,
-)
-from ultima_scraper_collection.managers.database_manager.database_manager import (
-    DatabaseManager,
-)
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
@@ -149,7 +148,7 @@ class ApiExtractor:
                 temp_date = float(temp_date)
             except:
                 pass
-        default_date = datetime.utcnow()
+        default_date = datetime.now()
         if temp_date == "-001-11-30T00:00:00+00:00":
             date_object = default_date
         else:
@@ -223,7 +222,7 @@ class ApiExtractor:
         return archived
 
     def resolve_paid(self):
-        if getattr(self.item, "price", 0):
+        if hasattr(self.item, "price"):
             if all(media["canView"] for media in self.item.media):
                 return True
             return False
@@ -260,11 +259,11 @@ class ContentMetadata:
         self.text = result.get_text()
         self.preview_media_ids = result.get_preview_ids()
         self.archived = result.resolve_archived()
-        self.medias: list[MediaMetadata] = await result.get_medias(self)
         self.price = getattr(result.item, "price", 0) or 0
         self.paid = result.resolve_paid()
         self.deleted = False
         self.created_at: datetime = result.get_date()
+        self.medias: list[MediaMetadata] = await result.get_medias(self)
         self.__raw__: Any | None = None
         self.__soft__ = result.item
         self.__media_types__ = None

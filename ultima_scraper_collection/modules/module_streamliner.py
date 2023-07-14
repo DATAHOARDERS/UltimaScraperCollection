@@ -7,10 +7,6 @@ from typing import Any, Optional
 import ultima_scraper_api
 from sqlalchemy import and_, or_, select
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
-    MessageModel as DBMessageModel,
-)
-
 from ultima_scraper_collection.config import site_config_types
 from ultima_scraper_collection.managers.download_manager import DownloadManager
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
@@ -18,6 +14,9 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     MetadataManager,
 )
 from ultima_scraper_collection.managers.server_manager import ServerManager
+from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+    MessageModel as DBMessageModel,
+)
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -281,7 +280,8 @@ class StreamlinedDatascraper:
         db_user = await site_db.get_user(performer.id)
         assert db_user
         await db_user.awaitable_attrs.content_manager
-        db_contents = await db_user.content_manager.get_contents(api_type)
+        content_manager = await db_user.content_manager.init()
+        db_contents = await content_manager.get_contents(api_type)
         final_download_set: set[ContentMetadata] = set()
         total_media_count = 0
         download_media_count = 0

@@ -9,9 +9,10 @@ import paramiko
 # from degen_x.managers.database_manager.job_manager import JobManager
 # from degen_x.managers.database_manager.legacy import legacy_to_new
 from sqlalchemy import MetaData, select
-from sshtunnel import SSHTunnelForwarder#type: ignore
+from sshtunnel import SSHTunnelForwarder  # type: ignore
 from ultima_scraper_db.databases.ultima.schemas.management import ServerModel, SiteModel
 from ultima_scraper_db.managers.database_manager import Alembica, DatabaseManager
+from ultima_scraper_db.managers.database_manager import Schema
 
 if TYPE_CHECKING:
     from ultima_scraper_collection import datascraper_types
@@ -118,6 +119,10 @@ class ServerManager:
             )
         )
         self.active_server = active_server.one()
+        self.site_schemas: list[Schema] = []
+        for db_site in self.db_sites:
+            site_schema_api = await self.get_site_db(db_site.db_name)
+            self.site_schemas.append(site_schema_api.schema)
         return self
 
     async def get_site_db(
