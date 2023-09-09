@@ -1,55 +1,21 @@
-import random
 import socket
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import Sequence
 
 import netifaces
-import paramiko
-
-# from degen_x.managers.database_manager.database_manager import DatabaseManager
-# from degen_x.managers.database_manager.job_manager import JobManager
-# from degen_x.managers.database_manager.legacy import legacy_to_new
-from sqlalchemy import MetaData, select
-from sshtunnel import SSHTunnelForwarder  # type: ignore
-from ultima_scraper_db.databases.ultima.schemas.management import ServerModel, SiteModel
-from ultima_scraper_db.managers.database_manager import Alembica, DatabaseManager
-from ultima_scraper_db.managers.database_manager import Schema
-
-if TYPE_CHECKING:
-    from ultima_scraper_collection import datascraper_types
+from sqlalchemy import select
+from ultima_scraper_db.databases.ultima_archive.database_api import ArchiveAPI
+from ultima_scraper_db.databases.ultima_archive.schemas.management import (
+    ServerModel,
+    SiteModel,
+)
+from ultima_scraper_db.managers.database_manager import Database, Schema
 
 
 class ServerManager:
-    def __init__(
-        self,
-        db_info: dict[str, Any],
-        db_manager: DatabaseManager = DatabaseManager(),
-    ) -> None:
-        self.db_manager = db_manager
-        # self.job_manager = JobManager(self)
-        self.db_info = db_info.copy()
-        if self.db_info["ssh"]["host"]:
-            ssh_private_key_password = self.db_info["ssh"]["private_key_password"]
-            private_key = paramiko.RSAKey.from_private_key_file(
-                self.db_info["ssh"]["private_key_filepath"], ssh_private_key_password
-            ).key
-            random_port = random.randint(6000, 6999)
-            ssh_obj = SSHTunnelForwarder(
-                (self.db_info["ssh"]["host"], self.db_info["ssh"]["port"]),
-                ssh_username=self.db_info["ssh"]["username"],
-                ssh_pkey=private_key,
-                ssh_private_key_password=ssh_private_key_password,
-                remote_bind_address=(self.db_info["host"], self.db_info["port"]),
-                local_bind_address=(self.db_info["host"], random_port),
-            )
-            self.db_info["ssh"] = ssh_obj
-        else:
-            self.db_info["ssh"] = None
+    def __init__(self, ultima_archive_db_api: ArchiveAPI) -> None:
+        self.ultima_archive_db_api = ultima_archive_db_api
 
-    async def init(self, alembica: Alembica, metadata: MetaData = MetaData()):
-        temp_database = self.db_manager.create_database(
-            **self.db_info, metadata=metadata, alembica=alembica
-        )
-
+    async def init(self, database: Database):
         def create_socket(socket_type: socket.SocketKind = socket.SOCK_DGRAM):
             temp_socket = socket.socket(socket.AF_INET, socket_type)
             temp_socket.connect(("8.8.8.8", 80))  # Connecting to Google's DNS server
@@ -75,20 +41,13 @@ class ServerManager:
                     return if_mac  # type: ignore
             return None
 
-        self.db_manager.add_database(temp_database)
-        database = await temp_database.init_db()
-        temp_database.alembica = alembica
-        if temp_database.alembica.is_generate:
-            await temp_database.generate_migration()
-            await temp_database.resolve_schemas()
-        await temp_database.run_migrations()
         self.management_db = database.schemas["management"]
         db_sites = await self.management_db.session.scalars(select(SiteModel))
         db_sites = db_sites.all()
         self.reset = False
         if not db_sites:
             # Need to add a create or update for additional sites
-            from ultima_scraper_db.databases.ultima.schemas.management import (
+            from ultima_scraper_db.databases.ultima_archive.schemas.management import (
                 default_sites,
             )
 
@@ -119,21 +78,17 @@ class ServerManager:
             )
         )
         self.active_server = active_server.one()
-        self.site_schemas: list[Schema] = []
+        self.site_schemas: dict[str, Schema] = {}
         for db_site in self.db_sites:
-            site_schema_api = await self.get_site_db(db_site.db_name)
-            self.site_schemas.append(site_schema_api.schema)
+            site_schema_api = self.ultima_archive_db_api.get_site_api(db_site.db_name)
+            self.site_schemas[site_schema_api.schema.name] = site_schema_api.schema
         return self
 
-    async def get_site_db(
-        self, name: str, datascraper: "datascraper_types | None" = None
-    ):
-        from ultima_scraper_db.managers.site_db import SiteDB
-
-        return SiteDB(
-            self.db_manager.databases[self.db_info["name"]].schemas[name.lower()],
-            datascraper=datascraper,
-        )
+    async def resolve_site_schema(self, value: str):
+        return self.site_schemas[value]
 
     async def resolve_db_site(self, value: str):
         return [x for x in self.db_sites if x.db_name == value][0]
+
+    async def find_site_api(self, name: str):
+        return self.ultima_archive_db_api.site_apis[name]

@@ -14,7 +14,7 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     MetadataManager,
 )
 from ultima_scraper_collection.managers.server_manager import ServerManager
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MessageModel as DBMessageModel,
 )
 
@@ -167,10 +167,10 @@ class StreamlinedDatascraper:
                 case "Posts":
                     temp_master_set = await self.datascraper.get_all_posts(user)
                 case "Messages":
-                    site_db = await self.server_manager.get_site_db(
+                    site_api = self.server_manager.ultima_archive_db_api.get_site_api(
                         authed.get_api().site_name
                     )
-                    temp_db_messages = await site_db.session.scalars(
+                    temp_db_messages = await site_api.session.scalars(
                         select(DBMessageModel)
                         .where(
                             or_(
@@ -276,8 +276,8 @@ class StreamlinedDatascraper:
             return
         api = performer.get_api()
         assert current_job
-        site_db = await self.server_manager.get_site_db(api.site_name, self.datascraper)
-        db_user = await site_db.get_user(performer.id)
+        site_api = self.server_manager.ultima_archive_db_api.get_site_api(api.site_name)
+        db_user = await site_api.get_user(performer.id)
         assert db_user
         await db_user.awaitable_attrs.content_manager
         content_manager = await db_user.content_manager.init()
@@ -286,7 +286,7 @@ class StreamlinedDatascraper:
         total_media_count = 0
         download_media_count = 0
         for db_content in db_contents:
-            await site_db.session.refresh(db_content, ["media"])
+            await site_api.session.refresh(db_content, ["media"])
             # To find duplicates, we must check if media belongs to any other content type via association table
             found_content = performer.content_manager.find_content(
                 db_content.id, api_type
@@ -328,7 +328,7 @@ class StreamlinedDatascraper:
             global_settings.tools.reformatter.active,
         )
         _result = await download_manager.bulk_download()
-        await site_db.session.commit()
+        await site_api.session.commit()
         current_job.done = True
         return
 

@@ -17,6 +17,7 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     ContentMetadata,
     MediaMetadata,
 )
+from ultima_scraper_renamer.reformat import ReformatManager
 
 
 class DownloadManager:

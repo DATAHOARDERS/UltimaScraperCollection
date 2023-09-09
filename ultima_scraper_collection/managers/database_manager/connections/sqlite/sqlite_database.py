@@ -140,7 +140,7 @@ class SqliteDatabase(DeclarativeBase):
             if not api_table:
                 return
             post_id = post.content_id
-            post_created_at_string = post.created_at_string
+            post_created_at_string = post.created_at
             date_object = None
             if post_created_at_string:
                 try:
@@ -175,7 +175,15 @@ class SqliteDatabase(DeclarativeBase):
                     if isinstance(media_created_at_string, int):
                         date_object = datetime.fromtimestamp(media_created_at_string)
                     else:
-                        date_object = datetime.fromisoformat(media_created_at_string)
+                        try:
+                            date_object = datetime.fromisoformat(
+                                media_created_at_string
+                            )
+                        except Exception as _e:
+                            date_object = datetime.strptime(
+                                post_created_at_string, "%d-%m-%Y %H:%M:%S"
+                            )
+                            pass
                 media_id = media.id
                 result = database_session.query(database.media_table)
                 media_db = result.filter_by(post_id=post_id, media_id=media_id).first()

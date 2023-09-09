@@ -1,4 +1,5 @@
 import mimetypes
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
@@ -15,16 +16,16 @@ from ultima_scraper_collection.managers.database_manager.database_manager import
     DatabaseManager,
 )
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MediaModel as DBMediaModel,
 )
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MessageModel as DBMessageModel,
 )
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     PostModel as DBPostModel,
 )
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     StoryModel as DBStoryModel,
 )
 
@@ -301,7 +302,7 @@ class MediaMetadata:
         content_metadata: ContentMetadata,
         urls: list[str] = [],
         preview: bool = False,
-        created_at: datetime = ...,
+        created_at: datetime | None = None,
         drm: bool = False,
     ) -> None:
         self.id = int(media_id) if media_id is not None else None
@@ -413,6 +414,8 @@ class MetadataManager:
             if (
                 metadata_filepath.suffix != ".json"
                 or "__legacy__" in metadata_filepath.parts
+                or "Mass Messages.json" == metadata_filepath.name
+                or "Chats.json" == metadata_filepath.name
             ):
                 continue
             final_content_type = None
@@ -422,8 +425,15 @@ class MetadataManager:
             ] = main_helper.import_json(metadata_filepath)
             content_types = self.subscription.get_api().ContentTypes().get_keys()
             final_stem = metadata_filepath.stem
-            if final_stem[-1].isdigit():
-                final_stem = final_stem.removesuffix(f"_{final_stem[-1]}")
+            patterns = []
+            underscore_pattern = r"(_\d+)"
+            parentheses_pattern = r"(\(\d+\))"
+            patterns.extend([underscore_pattern, parentheses_pattern])
+
+            for pattern in patterns:
+                matches = re.findall(pattern, final_stem)
+                if matches:
+                    final_stem = final_stem.removesuffix(matches[0]).strip()
             if final_stem in content_types:
                 final_content_type = final_stem
             else:
@@ -431,10 +441,9 @@ class MetadataManager:
                     if item in metadata_filepath.parts:
                         final_content_type = item
                         break
-                if final_stem == "Archived":
+                if final_stem == "Archived" or "Archived" in metadata_filepath.parts:
                     archive = True
                     final_content_type = "Posts"
-                    pass
                 if not final_content_type:
                     # If we get an key error here, we need to move the json file to correct folder or we can resolve it by getting content_type by looking at the directory path
                     # directory_set = set()
@@ -511,7 +520,7 @@ class MetadataManager:
                 content_json = new_metadata_set.get("content", new_metadata_set)
             if final_metadata_set:
                 final_metadata_set["content_type"] = final_content_type
-                main_helper.export_json(final_metadata_set.__dict__, metadata_filepath)
+                main_helper.export_json(final_metadata_set, metadata_filepath)
             for media_type, status in content_json.items():
                 merged_status = merge_statuses(status)
                 if merged_status:

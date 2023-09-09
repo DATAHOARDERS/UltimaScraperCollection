@@ -1,14 +1,11 @@
 from pathlib import Path
 
 from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
-from ultima_scraper_api.config import (
-    FanslyAPIConfig,
-    GlobalAPI,
-    OnlyFansAPIConfig,
-    Settings,
-    Sites,
-    UltimaScraperAPIConfig,
-)
+from ultima_scraper_api.config import FanslyAPIConfig
+from ultima_scraper_api.config import GlobalAPI as USAGlobalAPI
+from ultima_scraper_api.config import OnlyFansAPIConfig, Settings
+from ultima_scraper_api.config import Sites as USASites
+from ultima_scraper_api.config import UltimaScraperAPIConfig
 
 
 class Jobs(BaseModel):
@@ -73,11 +70,11 @@ class SSHConnection(BaseModel):
 
 
 class DatabaseInfo(BaseModel):
-    name: str = "ultima"
-    username: str | None = None
-    password: str | None = None
+    name: str = "ultima_archive"
     host: str = "localhost"
     port: int = 5432
+    username: str | None = None
+    password: str | None = None
     ssh: SSHConnection = SSHConnection()
 
 
@@ -96,7 +93,7 @@ class Tools(BaseModel):
 auto_types = list[int | str] | StrictInt | StrictStr | StrictBool | None
 
 
-class GlobalAPI(GlobalAPI):
+class GlobalAPI(USAGlobalAPI):
     auto_profile_choice: auto_types = None
     auto_performer_choice: auto_types = None
     auto_content_choice: auto_types = None
@@ -115,7 +112,7 @@ class GlobalAPI(GlobalAPI):
     blacklists: list[str] = []
 
 
-class Sites(Sites):
+class Sites(USASites):
     class OnlyFansAPIConfig(OnlyFansAPIConfig, GlobalAPI):
         pass
 
@@ -143,3 +140,6 @@ class UltimaScraperCollectionConfig(UltimaScraperAPIConfig):
 
     settings: Settings = Settings()
     site_apis: Sites = Sites()
+
+    def get_site_config(self, site_name: str):
+        return getattr(self.site_apis, site_name.lower())

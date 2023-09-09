@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -6,8 +7,8 @@ from ultima_scraper_renamer.reformat import ReformatManager
 
 from ultima_scraper_collection.config import Sites
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    ContentMetadata,
     ApiExtractor,
+    ContentMetadata,
 )
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.managers.server_manager import ServerManager
@@ -105,8 +106,10 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
 
     async def get_all_posts(self, subscription: "create_user"):
         temp_master_set = await subscription.get_posts()
+
         # get_archived_posts uses normal posts
         await subscription.get_archived_posts()
+        await asyncio.gather(*[x.get_comments() for x in temp_master_set])
         return temp_master_set
 
     async def get_all_subscriptions(

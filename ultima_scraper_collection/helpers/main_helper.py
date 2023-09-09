@@ -2,7 +2,7 @@ from shutil import disk_usage
 from typing import Any
 
 from ultima_scraper_api import user_types
-from ultima_scraper_db.databases.ultima.schemas.templates.site import (
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     UserModel as DBUserModel,
 )
 
