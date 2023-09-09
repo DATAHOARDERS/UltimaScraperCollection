@@ -1,10 +1,8 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "2.1.0"
+version = "2.1.1"
 description = ""
-authors = [
-    "DIGITALCRIMINALS <89371864+digitalcriminals@users.noreply.github.com>",
-]
+authors = ["DIGITALCRIMINAL <21285176+digitalcriminal@users.noreply.github.com>"]
 packages = [{include = "ultima_scraper_collection"}]
 include = ["ultima_scraper_collection/py.typed"]
 
@@ -22,6 +20,7 @@ ffmpeg-python = "^0.2.0"
 pydantic = "^1.10.9"
 netifaces = "^0.11.0"
 sshtunnel = "^0.4.0"
+fastapi = "^0.100.1"
 [tool.poetry.group.dev.dependencies]
 python-semantic-release = "^7.33.2"
 black = {version = "^23.3.0", allow-prereleases = true}
