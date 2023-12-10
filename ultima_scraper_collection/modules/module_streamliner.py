@@ -7,6 +7,14 @@ from typing import Any, Optional
 import ultima_scraper_api
 from sqlalchemy import and_, or_, select
 from tqdm.asyncio import tqdm_asyncio
+from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel as OFAuthModel
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MessageModel as DBMessageModel,
+)
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    UserModel as DBUserModel,
+)
+
 from ultima_scraper_collection.config import site_config_types
 from ultima_scraper_collection.managers.download_manager import DownloadManager
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
@@ -14,9 +22,6 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     MetadataManager,
 )
 from ultima_scraper_collection.managers.server_manager import ServerManager
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MessageModel as DBMessageModel,
-)
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -89,12 +94,12 @@ class StreamlinedDatascraper:
         if performer_options:
             identifiers = performer_options.return_auto_choice()
         if not available_jobs.subscriptions:
-            for authed in api.auths:
+            for authed in api.auths.values():
                 authed.subscriptions = []
         if available_jobs.messages:
             chat_users: list[user_types] = []
             if identifiers:
-                for authed in api.auths:
+                for authed in api.auths.values():
                     for identifier in identifiers:
                         chat_user = await authed.get_user(identifier)
                         if isinstance(chat_user, user_types):
@@ -109,7 +114,7 @@ class StreamlinedDatascraper:
             [valid_user_list.add(x) for x in chat_users]
 
         if available_jobs.paid_contents:
-            for authed in self.datascraper.api.auths:
+            for authed in self.datascraper.api.auths.values():
                 paid_contents = await authed.get_paid_content()
                 if not isinstance(paid_contents, error_types):
                     for paid_content in paid_contents:
@@ -119,7 +124,7 @@ class StreamlinedDatascraper:
                             if not found:
                                 continue
                         if author:
-                            performer = authed.find_user_by_identifier(
+                            performer = authed.find_user(
                                 identifier=author.id,
                             )
                             if performer:
@@ -159,7 +164,7 @@ class StreamlinedDatascraper:
         if not current_job:
             return
         temp_master_set: list[Any] = copy.copy(master_set)
-        if not temp_master_set:
+        if not temp_master_set and not current_job.ignore:
             match content_type:
                 case "Stories":
                     temp_master_set.extend(await self.datascraper.get_all_stories(user))
@@ -170,7 +175,7 @@ class StreamlinedDatascraper:
                     site_api = self.server_manager.ultima_archive_db_api.get_site_api(
                         authed.get_api().site_name
                     )
-                    temp_db_messages = await site_api.session.scalars(
+                    temp_db_messages = await site_api.schema.session.scalars(
                         select(DBMessageModel)
                         .where(
                             or_(
@@ -193,20 +198,7 @@ class StreamlinedDatascraper:
                         if all(x.verified for x in db_messages):
                             last_db_message = db_messages[0]
                             cutoff_id = last_db_message.id
-                    unrefined_set: list[message_types | Any] = await user.get_messages(
-                        cutoff_id=cutoff_id
-                    )
-
-                    mass_messages = getattr(authed, "mass_messages")
-                    if user.is_me() and mass_messages:
-                        mass_messages = getattr(authed, "mass_messages")
-                        # Need access to a creator's account to fix this
-                        # unrefined_set2 = await self.datascraper.process_mass_messages(
-                        #     authed,
-                        #     mass_messages,
-                        # )
-                        # unrefined_set += unrefined_set2
-                    temp_master_set = unrefined_set
+                    temp_master_set = await user.get_messages(cutoff_id=cutoff_id)
                 case "Archived":
                     pass
                 case "Chats":
@@ -214,6 +206,12 @@ class StreamlinedDatascraper:
                 case "Highlights":
                     pass
                 case "MassMessages":
+                    if user.is_me() and isinstance(authed, OFAuthModel):
+                        mass_message_stats = await authed.get_mass_message_stats()
+                        temp_master_set = []
+                        for mass_message_stat in mass_message_stats:
+                            mass_message = await mass_message_stat.get_mass_message()
+                            temp_master_set.append(mass_message)
                     pass
                 case _:
                     raise Exception(f"{content_type} is an invalid choice")
@@ -277,60 +275,37 @@ class StreamlinedDatascraper:
         api = performer.get_api()
         assert current_job
         site_api = self.server_manager.ultima_archive_db_api.get_site_api(api.site_name)
-        db_user = await site_api.get_user(performer.id)
-        assert db_user
-        await db_user.awaitable_attrs.content_manager
-        content_manager = await db_user.content_manager.init()
-        db_contents = await content_manager.get_contents(api_type)
-        final_download_set: set[ContentMetadata] = set()
-        total_media_count = 0
-        download_media_count = 0
-        for db_content in db_contents:
-            await site_api.session.refresh(db_content, ["media"])
-            # To find duplicates, we must check if media belongs to any other content type via association table
-            found_content = performer.content_manager.find_content(
-                db_content.id, api_type
-            )
-            from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-                ContentMetadata,
-                DBContentExtractor,
-            )
+        async with site_api.get_session_maker() as session:
+            site_api.set_session(session)
+            db_user = await site_api.get_user(performer.id)
+            assert db_user
+            await db_user.awaitable_attrs.content_manager
 
-            if found_content:
-                found_content.__db_content__ = db_content
-                final_download_set.add(found_content)
-                download_media_count += len(found_content.medias)
-            else:
-                continue
-                await db_content.awaitable_attrs.media
-                content_metadata = ContentMetadata(db_content.id, api_type)
-                extractor = DBContentExtractor(db_content)
-                extractor.__api__ = api
-                await content_metadata.resolve_extractor(extractor)
-                content_metadata.__db_content__ = db_content
-                final_download_set.add(content_metadata)
-                total_media_count += len(db_content.media)
-            pass
+            contents: dict[
+                int, ContentMetadata
+            ] = performer.content_manager.get_contents(api_type)
+            final_download_set = set(contents.values())
+            total_media_count = len(final_download_set)
+            download_media_count = 0
 
-        global_settings = performer.get_api().get_global_settings()
-        filesystem_manager = self.datascraper.filesystem_manager
-        performer_directory_manager = filesystem_manager.get_directory_manager(
-            performer.id
-        )
-        directory = performer_directory_manager.user.download_directory
-        string = "Processing Download:\n"
-        string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
-        print(string)
-        download_manager = DownloadManager(
-            performer.get_authed(),
-            filesystem_manager,
-            final_download_set,
-            global_settings.tools.reformatter.active,
-        )
-        _result = await download_manager.bulk_download()
-        await site_api.session.commit()
-        current_job.done = True
-        return
+            global_settings = performer.get_api().get_global_settings()
+            filesystem_manager = self.datascraper.filesystem_manager
+            performer_directory_manager = filesystem_manager.get_directory_manager(
+                performer.id
+            )
+            directory = performer_directory_manager.user.download_directory
+            string = "Processing Download:\n"
+            string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
+            print(string)
+            download_manager = DownloadManager(
+                performer.get_authed(),
+                filesystem_manager,
+                final_download_set,
+                global_settings.tools.reformatter.active,
+            )
+            _result = await download_manager.bulk_download()
+            await site_api.schema.session.commit()
+            current_job.done = True
 
     async def manage_subscriptions(
         self,
@@ -395,3 +370,27 @@ class StreamlinedDatascraper:
                     subscription = chat["withUser"]
                     chat_users.append(subscription)
         return chat_users
+
+    async def get_performer(self, authed: auth_types, db_performer: DBUserModel):
+        if authed.id == db_performer.id:
+            performer = authed.user
+        else:
+            subscriptions = await authed.get_subscriptions(
+                identifiers=[db_performer.id]
+            )
+            if not subscriptions:
+                paid_contents = await authed.get_paid_content(
+                    performer_id=db_performer.id
+                )
+                if not paid_contents:
+                    return None
+                else:
+                    performer = paid_contents[0].get_author()
+            else:
+                performer = subscriptions[0].user
+        if isinstance(
+            performer, ultima_scraper_api.onlyfans_classes.user_model.create_user
+        ):
+            if performer.is_blocked:
+                await performer.unblock()
+        return performer
