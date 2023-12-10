@@ -108,7 +108,6 @@ class GlobalAPI(USAGlobalAPI):
         "{site_name}/{first_letter}/{model_username}/{api_type}/{value}/{media_type}"
     )  # type: ignore
     download_setup.filename_format = "{filename}.{ext}"  # type: ignore
-    video_quality = "source"
     blacklists: list[str] = []
 
 

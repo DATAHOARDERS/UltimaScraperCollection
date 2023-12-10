@@ -6,9 +6,8 @@ from urllib.parse import urlparse
 import ffmpeg
 from aiohttp import ClientResponse
 from ultima_scraper_api import auth_types
+from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_renamer.reformat import ReformatManager
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -17,6 +16,7 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     ContentMetadata,
     MediaMetadata,
 )
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import MediaModel
 from ultima_scraper_renamer.reformat import ReformatManager
 
 
@@ -30,7 +30,8 @@ class DownloadManager:
     ) -> None:
         self.authed = authed
         self.filesystem_manager = filesystem_manager
-        self.session_manager = self.authed.session_manager
+        self.auth_session = self.authed.auth_session
+        self.requester = self.authed.get_requester()
         self.content_list: set[ContentMetadata] = content_list
         self.errors: list[TemplateMediaModel] = []
         self.reformat = reformat
@@ -58,9 +59,10 @@ class DownloadManager:
         responses: list[ClientResponse] = []
 
         if pssh:
-            license = await drm.get_license(
-                content_metadata.__soft__.__raw__, media_item, pssh
-            )
+            raw_data = content_metadata.__soft__.__raw__.copy()
+            if isinstance(content_metadata.__soft__, MassMessageModel):
+                raw_data["responseType"] = ""
+            license = await drm.get_license(raw_data, media_item, pssh)
             keys = await drm.get_keys(license)
             content_key = keys[-1]
             key = f"{content_key.kid.hex}:{content_key.key.hex()}"
@@ -87,7 +89,7 @@ class DownloadManager:
                 )
 
                 signature_str = await drm.get_signature(media_item)
-                response = await authed.session_manager.request(
+                response = await authed.auth_session.request(
                     media_url, premade_settings="", custom_cookies=signature_str
                 )
                 responses.append(response)
@@ -106,15 +108,17 @@ class DownloadManager:
             db_media = await db_content.find_media(download_item.id)
             if not db_media:
                 return
-            db_filepath = await db_media.find_filepath(
+            db_filepath = db_media.find_filepath(
                 db_content.id, content_metadata.api_type
             )
             assert db_filepath
             db_filepath.preview = download_item.preview
+            if db_filepath.preview:
+                pass
 
         matches = ["us", "uk", "ca", "ca2", "de"]
         p_url = urlparse(download_item.urls[0])
-
+        assert p_url.hostname
         subdomain = p_url.hostname.split(".")[0]
         if any(subdomain in nm for nm in matches):
             return
@@ -123,8 +127,8 @@ class DownloadManager:
         authed = self.authed
         authed_drm = authed.drm
 
-        async with self.session_manager.semaphore:
-            while attempt < self.session_manager.max_attempts + 1:
+        async with self.auth_session.semaphore:
+            while attempt < self.auth_session.get_session_manager().max_attempts + 1:
                 try:
                     if download_item.drm:
                         if not authed_drm:
@@ -132,7 +136,7 @@ class DownloadManager:
                         responses = await self.drm_download(download_item)
                     else:
                         responses = [
-                            await self.session_manager.request(download_item.urls[0])
+                            await self.requester.request(download_item.urls[0])
                         ]
                     if all(response.status != 200 for response in responses):
                         attempt += 1
@@ -196,6 +200,8 @@ class DownloadManager:
                     break
                 except asyncio.TimeoutError as _e:
                     continue
+                except Exception as _e:
+                    print(_e)
 
     async def writer(
         self,
@@ -227,27 +233,27 @@ class DownloadManager:
                 return True
         return False
 
-    async def check(self, download_item: TemplateMediaModel, response: ClientResponse):
+    async def check(self, download_item: MediaModel, response: ClientResponse):
+        # Checks if we should download item or not // True | False
         filepath = Path(download_item.directory, download_item.filename)
         response_status = False
         if response.status == 200:
             response_status = True
             if response.content_length:
                 download_item.size = response.content_length
-            else:
-                pass
 
         if filepath.exists():
-            if filepath.stat().st_size == response.content_length:
-                download_item.downloaded = True
-            else:
-                if download_item.downloaded:
-                    return
-                return download_item
+            try:
+                if filepath.stat().st_size == response.content_length:
+                    return False
+                else:
+                    return True
+            except Exception as _e:
+                pass
         else:
             if response_status:
                 # Can produce false positives due to the same reason below
-                return download_item
+                return True
             else:
                 # Reached this point because it probably exists in the folder but under a different content category
                 pass
@@ -256,12 +262,12 @@ class DownloadManager:
         # If you have decrypted video and audio to merge
         if len(decrypted_media_paths) > 1:
             dec_video_path, dec_audio_path = decrypted_media_paths
-            video_input = ffmpeg.input(dec_video_path)
-            audio_input = ffmpeg.input(dec_audio_path)
+            video_input = ffmpeg.input(dec_video_path)  # type:ignore
+            audio_input = ffmpeg.input(dec_audio_path)  # type:ignore
             try:
-                _ffmpeg_output = ffmpeg.output(
-                    video_input,
-                    audio_input,
+                _ffmpeg_output = ffmpeg.output(  # type:ignore
+                    video_input,  # type:ignore
+                    audio_input,  # type:ignore
                     output_filepath.as_posix(),
                     vcodec="copy",
                     acodec="copy",

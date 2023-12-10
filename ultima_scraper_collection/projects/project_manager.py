@@ -46,11 +46,12 @@ class Project:
         db_info: dict[str, Any],
         alembica: Alembica,
         metadata: MetaData = MetaData(),
+        echo: bool = False,
     ):
         db_info = self.handle_ssh(db_info)
         temp_database = self.db_manager.create_database(
             **db_info, metadata=metadata, alembica=alembica
         )
         self.db_manager.add_database(temp_database)
-        await temp_database.init_db()
+        await temp_database.init_db(echo)
         return temp_database
