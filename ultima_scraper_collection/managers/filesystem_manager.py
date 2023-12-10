@@ -7,13 +7,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Literal
 
-from ultima_scraper_api.classes.prepare_metadata import format_attributes
 import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
-from ultima_scraper_renamer.reformat import ReformatItem
+from ultima_scraper_renamer.reformat import FormatAttributes, ReformatItem
 
+from ultima_scraper_collection.helpers import main_helper
 
 if TYPE_CHECKING:
     api_types = ultima_scraper_api.api_types
@@ -85,33 +85,30 @@ class FilesystemManager:
         if response.status == 200:
             total_length = 0
             os.makedirs(os.path.dirname(download_path), exist_ok=True)
-            partial_path: str | None = None
-            try:
-                with open_partial(download_path) as f:
-                    partial_path = f.name
-                    try:
-                        async for data in response.content.iter_chunked(4096):
-                            f.write(data)
-                            length = len(data)
-                            total_length += length
-                            if callback:
-                                callback(length)
-                    except EXCEPTION_TEMPLATE as _e:
-                        status_code = 1
-                    except Exception as _e:
-                        raise Exception(f"Unknown Error: {_e}")
-            except:
-                if partial_path:
+            with open_partial(download_path) as f:
+                partial_path = f.name
+                try:
+                    async for data in response.content.iter_chunked(4096):
+                        f.write(data)
+                        length = len(data)
+                        total_length += length
+                        if callback:
+                            callback(length)
+                except EXCEPTION_TEMPLATE as _e:
+                    status_code = 1
+                except Exception as _e:
+                    raise Exception(f"Unknown Error: {_e}")
+                except:
                     os.unlink(partial_path)
-                raise
-            else:
-                if status_code:
-                    os.unlink(partial_path)
+                    raise
                 else:
-                    try:
-                        os.replace(partial_path, download_path)
-                    except OSError:
-                        pass
+                    if status_code:
+                        os.unlink(partial_path)
+                    else:
+                        try:
+                            os.replace(partial_path, download_path)
+                        except OSError:
+                            pass
         else:
             if response.content_length:
                 pass
@@ -119,36 +116,86 @@ class FilesystemManager:
             status_code = 2
         return status_code
 
-    async def create_directory_manager(
+    async def create_option(
+        self,
+        datascraper: datascraper_types,
+        username: str,
+        directory: Path,
+        format_key: str,
+    ):
+        api = datascraper.api
+        option = {
+            "site_name": api.site_name,
+            "profile_username": username,
+            "model_username": username,
+            "directory": directory,
+        }
+        reformat_item_fd = ReformatItem(option)
+        assert self.directory_manager
+        f_d_p = reformat_item_fd.remove_non_unique(self.directory_manager, format_key)
+        return f_d_p
+
+    async def update_performer_folder_name(
         self, datascraper: datascraper_types, user: user_types
     ):
-        # profile_directory = filesystem_directory_manager.profile.root_directory.joinpath(
-        #     self.username
-        # )
-        api = datascraper.api
+        for directory in datascraper.site_config.download_setup.directories:
+            for username in user.aliases:
+                f_d_p = await self.create_option(
+                    datascraper, username, directory.path, "file_directory_format"
+                )
+                if f_d_p.exists():
+                    new_folderpath = await self.create_option(
+                        datascraper,
+                        user.username,
+                        directory.path,
+                        "file_directory_format",
+                    )
+                    f_d_p.rename(new_folderpath)
+                    # can merge duplicate folders here
+                    break
+
+    async def create_directory_manager(
+        self, site_config: site_config_types, user: user_types
+    ):
+        api = user.get_api()
         if self.directory_manager:
+            final_download_directory = self.directory_manager.root_download_directory
+            for directory in site_config.download_setup.directories:
+                option = {
+                    "site_name": api.site_name,
+                    "profile_username": user.username,
+                    "model_username": user.username,
+                    "directory": directory.path,
+                }
+                reformat_item_fd = ReformatItem(option)
+                f_d_p = reformat_item_fd.remove_non_unique(
+                    self.directory_manager, "file_directory_format"
+                )
+                if f_d_p.exists():
+                    final_download_directory = directory.path
+                    break
             directory_manager = DirectoryManager(
-                datascraper.site_config,
+                site_config,
                 self.directory_manager.root_metadata_directory,
-                self.directory_manager.root_download_directory,
+                final_download_directory,
             )
-            option = {
-                "site_name": api.site_name,
-                "profile_username": user.username,
-                "model_username": user.username,
-                "directory": directory_manager.root_download_directory,
-            }
-            reformat_item_fd = ReformatItem(option)
-            _f_d_p = reformat_item_fd.remove_non_unique(
-                directory_manager, "file_directory_format"
-            )
-            # f_d_p.mkdir(parents=True, exist_ok=True)
-            option["directory"] = self.directory_manager.root_metadata_directory
-            reformat_item_md = ReformatItem(option)
-            _f_d_p_2 = reformat_item_md.remove_non_unique(
-                self.directory_manager, "metadata_directory_format"
-            )
-            # f_d_p_2.mkdir(parents=True, exist_ok=True)
+            # option = {
+            #     "site_name": api.site_name,
+            #     "profile_username": user.username,
+            #     "model_username": user.username,
+            #     "directory": directory_manager.root_download_directory,
+            # }
+            # reformat_item_fd = ReformatItem(option)
+            # _f_d_p = reformat_item_fd.remove_non_unique(
+            #     directory_manager, "file_directory_format"
+            # )
+            # # f_d_p.mkdir(parents=True, exist_ok=True)
+            # option["directory"] = self.directory_manager.root_metadata_directory
+            # reformat_item_md = ReformatItem(option)
+            # _f_d_p_2 = reformat_item_md.remove_non_unique(
+            #     self.directory_manager, "metadata_directory_format"
+            # )
+            # # f_d_p_2.mkdir(parents=True, exist_ok=True)
             self.directory_manager_users[user.id] = directory_manager
             self.file_manager_users[user.id] = FileManager(directory_manager)
             return directory_manager
@@ -216,7 +263,6 @@ class DirectoryManager:
         self.root_directory = Path()
         self.root_metadata_directory = Path(root_metadata_directory)
         self.root_download_directory = Path(root_download_directory)
-        # self.profile = self.ProfileDirectories(Path(profile_directory))
         self.user = self.UserDirectories()
         self.site_config = site_config
         formats = FormatTypes(site_config)
@@ -282,11 +328,7 @@ class DirectoryManager:
             return final_directory
 
     async def walk(self, directory: Path):
-        all_files: list[Path] = []
-        for root, _subdirs, files in os.walk(directory):
-            x = [Path(root, x) for x in files]
-            all_files.extend(x)
-        return all_files
+        return await main_helper.walk(directory)
 
 
 class FileManager:
@@ -300,10 +342,10 @@ class FileManager:
         prepared_download_format: ReformatItem,
     ):
         self.files = []
-        await self.add_files(prepared_metadata_format, "metadata_directory_format")
-        await self.add_files(prepared_download_format, "file_directory_format")
+        await self.update_files(prepared_metadata_format, "metadata_directory_format")
+        await self.update_files(prepared_download_format, "file_directory_format")
 
-    async def add_files(self, reformatter: ReformatItem, format_key: str):
+    async def update_files(self, reformatter: ReformatItem, format_key: str):
         directory_manager = self.directory_manager
         formatted_directory = reformatter.remove_non_unique(
             directory_manager, format_key
@@ -312,6 +354,14 @@ class FileManager:
         files = await directory_manager.walk(formatted_directory)
         self.files.extend(files)
         return files
+
+    async def add_file(self, filepath: Path):
+        self.files.append(filepath)
+        return True
+
+    async def remove_file(self, filepath: Path):
+        self.files.remove(filepath)
+        return True
 
     async def find_metadata_files(self, legacy_files: bool = True):
         new_list: list[Path] = []
@@ -351,7 +401,7 @@ class FormatTypes:
         string = ""
         for key, _value in self:
             if key == "file_directory_format":
-                bl = format_attributes()
+                bl = FormatAttributes()
                 wl = [v for _k, v in bl.__dict__.items()]
                 bl = bl.whitelist(wl)
                 invalid_list = []
@@ -359,7 +409,7 @@ class FormatTypes:
                     if b in self.file_directory_format.as_posix():
                         invalid_list.append(b)
             if key == "filename_format":
-                bl = format_attributes()
+                bl = FormatAttributes()
                 wl = [v for _k, v in bl.__dict__.items()]
                 bl = bl.whitelist(wl)
                 invalid_list = []
@@ -374,7 +424,7 @@ class FormatTypes:
                     "{profile_username}",
                     "{model_username}",
                 ]
-                bl = format_attributes().whitelist(wl)
+                bl = FormatAttributes().whitelist(wl)
                 invalid_list: list[str] = []
                 for b in bl:
                     if b in self.metadata_directory_format.as_posix():
@@ -393,7 +443,7 @@ class FormatTypes:
         option["string"] = ""
         option["bool_status"] = True
         option["unique"] = new_format_copied
-        f = format_attributes()
+        f = FormatAttributes()
         for key, value in self:
             value: Path
             if key == "file_directory_format":

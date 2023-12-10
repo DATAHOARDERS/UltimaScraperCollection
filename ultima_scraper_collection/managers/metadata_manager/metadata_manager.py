@@ -7,6 +7,7 @@ from urllib.parse import ParseResult, urlparse
 
 import ultima_scraper_api
 from sqlalchemy import inspect
+from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
@@ -62,7 +63,7 @@ class DBContentExtractor:
     def get_date(self):
         return self.item.created_at
 
-    async def get_medias(self, content_metadata: "ContentMetadata"):
+    def get_medias(self, content_metadata: "ContentMetadata"):
         final_assets: list[MediaMetadata] = []
         for media_item in self.item.media:
             if not media_item.category:
@@ -89,7 +90,7 @@ class DBContentExtractor:
                 created_at=content_metadata.created_at,
             )
             new_asset.urls = [media_item.url]
-            filepath = await media_item.find_filepath(
+            filepath = media_item.find_filepath(
                 content_metadata.content_id, content_metadata.api_type
             )
             if filepath:
@@ -128,6 +129,8 @@ class ApiExtractor:
             final_text = self.item.rawText or self.item.text
         elif isinstance(self.item, ultima_scraper_api.message_types):
             final_text = self.item.text
+        elif isinstance(self.item, MassMessageModel):
+            final_text = self.item.raw_text or self.item.text
         else:
             final_text = ""
         return final_text
@@ -166,7 +169,7 @@ class ApiExtractor:
                 date_object = temp_date
         return date_object
 
-    async def get_medias(self, content_metadata: "ContentMetadata"):
+    def get_medias(self, content_metadata: "ContentMetadata"):
         final_assets: list[MediaMetadata] = []
         for asset_metadata in self.item.media:
             raw_media_type = asset_metadata["type"]
@@ -264,7 +267,7 @@ class ContentMetadata:
         self.paid = result.resolve_paid()
         self.deleted = False
         self.created_at: datetime = result.get_date()
-        self.medias: list[MediaMetadata] = await result.get_medias(self)
+        self.medias: list[MediaMetadata] = result.get_medias(self)
         self.__raw__: Any | None = None
         self.__soft__ = result.item
         self.__media_types__ = None
@@ -292,6 +295,10 @@ class ContentMetadata:
                 found_url = asset.find_by_url(url)
                 if found_url:
                     return asset
+
+    def get_mass_message_stat(self):
+        if isinstance(self.__soft__, MassMessageModel):
+            return self.__soft__.mass_message_stat
 
 
 class MediaMetadata:
@@ -414,7 +421,7 @@ class MetadataManager:
             if (
                 metadata_filepath.suffix != ".json"
                 or "__legacy__" in metadata_filepath.parts
-                or "Mass Messages.json" == metadata_filepath.name
+                or "Mass Messages" in metadata_filepath.as_posix()
                 or "Chats.json" == metadata_filepath.name
             ):
                 continue
@@ -433,7 +440,9 @@ class MetadataManager:
             for pattern in patterns:
                 matches = re.findall(pattern, final_stem)
                 if matches:
-                    final_stem = final_stem.removesuffix(matches[0]).strip()
+                    final_stem = (
+                        final_stem.removesuffix(matches[0]).strip().replace(" ", "")
+                    )
             if final_stem in content_types:
                 final_content_type = final_stem
             else:
@@ -595,6 +604,9 @@ class MetadataManager:
         self,
     ):
         api = self.subscription.get_api()
+        filesystem_manager_user = self.filesystem_manager.get_file_manager(
+            self.subscription.id
+        )
         directory_manager = self.filesystem_manager.get_directory_manager(
             self.subscription.id
         )
@@ -662,6 +674,8 @@ class MetadataManager:
                 )
                 new_filepath.parent.mkdir(exist_ok=True)
                 archived_database_path.rename(new_filepath)
+                await filesystem_manager_user.remove_file(archived_database_path)
+                await filesystem_manager_user.add_file(new_filepath)
 
     def export(self, api_type: str, datas: list[dict[str, Any]]):
         if api_type == "Posts":

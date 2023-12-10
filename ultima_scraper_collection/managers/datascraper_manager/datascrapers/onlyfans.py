@@ -10,6 +10,7 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     ApiExtractor,
     ContentMetadata,
 )
+from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
@@ -41,7 +42,7 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
     # Scrapes the API for content
     async def media_scraper(
         self,
-        content_result: "create_story | create_post | create_message",
+        content_result: "create_story | create_post | create_message|MassMessageModel",
         subscription: "create_user",
         api_type: str,
     ) -> dict[str, Any]:

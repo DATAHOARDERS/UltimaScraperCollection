@@ -1,6 +1,6 @@
 import ultima_scraper_api
+from ultima_scraper_api import SUPPORTED_SITES
 from ultima_scraper_api.apis.onlyfans import onlyfans
-
 from ultima_scraper_collection import datascraper_types
 from ultima_scraper_collection.config import UltimaScraperCollectionConfig
 from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
@@ -17,25 +17,33 @@ class DataScraperManager:
     def __init__(
         self, server_manager: ServerManager, config: UltimaScraperCollectionConfig
     ) -> None:
-        self.active_datascraper = None
-        self.datascrapers: list[datascraper_types] = []
+        self.datascrapers: dict[str, datascraper_types] = {}
         self.server_manager: ServerManager = server_manager
         self.config = config
+        for site_name in SUPPORTED_SITES:
+            datascraper = self.add_datascraper(
+                ultima_scraper_api.select_api(site_name, config),
+                OptionManager(),
+                self.server_manager,
+            )
+            datascraper.filesystem_manager.activate_directory_manager(
+                self.get_site_config(site_name)
+            )
 
     def get_site_config(self, name: str):
         return getattr(self.config.site_apis, name.lower())
 
+    def find_datascraper(
+        self,
+        site_name: str,
+    ):
+        return self.datascrapers.get(site_name.lower())
+
     def select_datascraper(
         self,
-        api: ultima_scraper_api.api_types,
-        option_manager: OptionManager = OptionManager(),
+        site_name: str,
     ):
-        self.active_datascraper = self.get_datascraper(api)
-        if not self.active_datascraper:
-            self.active_datascraper = self.add_datascraper(
-                api, option_manager, self.server_manager
-            )
-        return self.active_datascraper
+        return self.datascrapers.get(site_name.lower())
 
     def add_datascraper(
         self,
@@ -52,11 +60,5 @@ class DataScraperManager:
             datascraper = FanslyDataScraper(
                 api, option_manager, server_manager, site_settings
             )
-        self.datascrapers.append(datascraper)
+        self.datascrapers[api.site_name.lower()] = datascraper
         return datascraper
-
-    def get_datascraper(self, api: ultima_scraper_api.api_types):
-        for datascraper in self.datascrapers:
-            if datascraper.api.site_name == api.site_name:
-                return datascraper
-        return None

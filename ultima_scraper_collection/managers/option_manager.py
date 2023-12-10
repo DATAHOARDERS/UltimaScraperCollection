@@ -1,6 +1,7 @@
 from typing import Any
 from ultima_scraper_collection.config import auto_types
 
+
 class OptionManager:
     def __init__(self) -> None:
         self.performer_options: OptionsFormat | None = None
@@ -10,10 +11,10 @@ class OptionManager:
     async def create_option(
         self,
         items: list[Any],
-        options_type: str,
+        category: str,
         auto_choice: auto_types = False,
     ):
-        option = await OptionsFormat(items, options_type, auto_choice).formatter()
+        option = await OptionsFormat(items, category, auto_choice).formatter()
         return option
 
 
