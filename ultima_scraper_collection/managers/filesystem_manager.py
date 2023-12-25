@@ -27,7 +27,7 @@ class FilesystemManager:
         self.user_data_directory = Path("__user_data__")
         self.trash_directory = self.user_data_directory.joinpath("trash")
         self.profiles_directory = self.user_data_directory.joinpath("profiles")
-        self.devices_directory = self.user_data_directory.joinpath("devices")
+        self.devices_directory = self.user_data_directory.joinpath("drm_device")
         self.settings_directory = Path("__user_data__")
         self.ignore_files = ["desktop.ini", ".DS_Store", ".DS_store", "@eaDir"]
         self.directory_manager: DirectoryManager | None = None
@@ -139,6 +139,7 @@ class FilesystemManager:
         self, datascraper: datascraper_types, user: user_types
     ):
         for directory in datascraper.site_config.download_setup.directories:
+            assert directory.path
             for username in user.aliases:
                 f_d_p = await self.create_option(
                     datascraper, username, directory.path, "file_directory_format"
@@ -173,6 +174,7 @@ class FilesystemManager:
                 )
                 if f_d_p.exists():
                     final_download_directory = directory.path
+                    assert final_download_directory
                     break
             directory_manager = DirectoryManager(
                 site_config,
@@ -238,7 +240,7 @@ class FilesystemManager:
         directory_manager.user.legacy_metadata_directories.append(
             legacy_metadata_directory
         )
-        items = api.ContentTypes().__dict__.items()
+        items = api.CategorizedContent()
         for api_type, _ in items:
             legacy_metadata_directory_2 = user_metadata_directory.joinpath(api_type)
             directory_manager.user.legacy_metadata_directories.append(

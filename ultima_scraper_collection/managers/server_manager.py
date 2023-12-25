@@ -92,3 +92,6 @@ class ServerManager:
 
     async def find_site_api(self, name: str):
         return self.ultima_archive_db_api.site_apis[name]
+
+    def get_server_id(self):
+        return self.active_server.id

@@ -1,8 +1,13 @@
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.apis.onlyfans.onlyfans import OnlyFansAPI
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import PostModel
 from ultima_scraper_renamer.reformat import ReformatManager
 
 from ultima_scraper_collection.config import Sites
@@ -10,13 +15,12 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     ApiExtractor,
     ContentMetadata,
 )
-from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
 
 if TYPE_CHECKING:
-    from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel
+    from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
     from ultima_scraper_api.apis.onlyfans.classes.hightlight_model import (
         create_highlight,
     )
@@ -58,12 +62,21 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         if api_type == "Messages":
             pass
 
-        content_metadata = ContentMetadata(content_result.id, api_type)
+        content_metadata = ContentMetadata(
+            content_result.id, api_type, self.resolve_content_manager(subscription)
+        )
+
         await content_metadata.resolve_extractor(ApiExtractor(content_result))
         for asset in content_metadata.medias:
             if asset.urls:
                 reformat_manager = ReformatManager(authed, self.filesystem_manager)
                 reformat_item = reformat_manager.prepare_reformat(asset)
+                if reformat_item.api_type == "Messages":
+                    if (
+                        content_metadata.queue_id
+                        and content_metadata.__soft__.is_mass_message()
+                    ):
+                        reformat_item.api_type = "MassMessages"
                 file_directory = reformat_item.reformat(
                     site_config.download_setup.directory_format
                 )
@@ -105,17 +118,48 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         master_set.extend(valid_highlights)
         return master_set
 
-    async def get_all_posts(self, subscription: "create_user"):
-        temp_master_set = await subscription.get_posts()
+    async def get_all_posts(self, performer: "create_user") -> list["create_post"]:
+        async with self.get_archive_db_api().create_site_api(
+            performer.get_api().site_name
+        ) as db_site_api:
+            after_date = None
+            # db_performer = await db_site_api.get_user(performer.id)
+            # await db_performer.awaitable_attrs._posts
+            # result = await db_performer.last_subscription_downloaded_at()
+            # if result:
+            #     after_date = result.downloaded_at
 
-        # get_archived_posts uses normal posts
-        await subscription.get_archived_posts()
-        await asyncio.gather(*[x.get_comments() for x in temp_master_set])
-        return temp_master_set
+            posts = await performer.get_posts(after_date=after_date)
+            archived_posts = await performer.get_posts(label="archived")
+            private_archived_posts = await performer.get_posts(label="private_archived")
+
+            session = db_site_api.get_session()
+            posts_with_comments = (
+                select(PostModel)
+                .options(joinedload(PostModel.comments))
+                .filter(PostModel.comments.any())
+                .where(PostModel.user_id == performer.id)
+                .order_by(PostModel.created_at.desc())
+            )
+            results = await session.scalars(posts_with_comments)
+            db_posts = results.unique().all()
+            threshold_date = (
+                db_posts[0].created_at
+                if db_posts
+                else datetime.min.replace(tzinfo=timezone.utc)
+            )
+            tasks = [
+                x.get_comments()
+                for x in performer.scrape_manager.scraped.Posts.values()
+                if x.created_at > threshold_date
+            ]
+
+            await asyncio.gather(*tasks)
+            return posts + archived_posts + private_archived_posts
 
     async def get_all_subscriptions(
         self,
-        authed: "AuthModel",
+        authed: "OnlyFansAuthModel",
         identifiers: list[int | str] = [],
         refresh: bool = True,
     ):

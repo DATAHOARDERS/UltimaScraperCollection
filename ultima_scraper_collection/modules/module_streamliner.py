@@ -6,22 +6,35 @@ from typing import Any, Optional
 
 import ultima_scraper_api
 from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import joinedload
 from tqdm.asyncio import tqdm_asyncio
-from ultima_scraper_api.apis.onlyfans.classes.auth_model import AuthModel as OFAuthModel
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MessageModel as DBMessageModel,
-)
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    UserModel as DBUserModel,
-)
-
+from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
 from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
 from ultima_scraper_collection.managers.download_manager import DownloadManager
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
     MetadataManager,
 )
 from ultima_scraper_collection.managers.server_manager import ServerManager
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    FilePathModel as DBFilePathModel,
+)
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MediaModel as DBMediaModel,
+)
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MessageModel as DBMessageModel,
+)
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import UserModel
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    UserModel as DBUserModel,
+)
+from ultima_scraper_renamer.reformat import ReformatManager
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -31,6 +44,7 @@ subscription_types = ultima_scraper_api.subscription_types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ultima_scraper_api.managers.session_manager import AuthedSession
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
         FanslyDataScraper,
     )
@@ -67,17 +81,84 @@ class download_session(tqdm_asyncio):
             self.total += tsize
 
 
+async def find_earliest_non_downloaded_message(
+    user: user_types, datascraper: "datascraper_types"
+):
+    authed = user.get_authed()
+    site_api = datascraper.server_manager.ultima_archive_db_api.get_site_api(
+        authed.get_api().site_name
+    )
+    temp_db_messages = await site_api.schema.session.scalars(
+        select(DBMessageModel)
+        .where(
+            or_(
+                and_(
+                    DBMessageModel.user_id == authed.id,
+                    DBMessageModel.receiver_id == user.id,
+                ),
+                and_(
+                    DBMessageModel.user_id == user.id,
+                    DBMessageModel.receiver_id == authed.id,
+                ),
+            )
+        )
+        .order_by(DBMessageModel.id.desc())
+        .options(
+            joinedload(DBMessageModel.media)
+            .joinedload(DBMediaModel.filepaths)
+            .joinedload(DBFilePathModel.message)
+        )
+    )
+
+    db_messages = temp_db_messages.unique().all()
+    earliest_non_downloaded_message = None
+
+    for db_message in db_messages:
+        all_media_downloaded = False
+        for media in db_message.media:
+            for filepath in media.filepaths:
+                if not filepath.message:
+                    continue
+                if filepath.downloaded:
+                    all_media_downloaded = True
+                    break
+
+        if not all_media_downloaded:
+            if (
+                earliest_non_downloaded_message is None
+                or db_message.created_at < earliest_non_downloaded_message.created_at
+            ):
+                earliest_non_downloaded_message = db_message
+    return earliest_non_downloaded_message
+
+
 class StreamlinedDatascraper:
     def __init__(
         self, datascraper: datascraper_types, server_manager: ServerManager
     ) -> None:
         self.datascraper = datascraper
         self.filesystem_manager = FilesystemManager()
-        self.content_types = self.datascraper.api.ContentTypes()
         self.media_types = self.datascraper.api.MediaTypes()
         self.user_list: set[user_types] = set()
         self.metadata_manager_users: dict[int, MetadataManager] = {}
         self.server_manager: ServerManager = server_manager
+        self.content_managers: dict[int, ContentManager] = {}
+        self.media_managers: dict[int, MediaManager] = {}
+
+    def resolve_content_manager(self, user: user_types):
+        if user.id not in self.content_managers:
+            self.content_managers[user.id] = ContentManager(
+                user.get_authed().auth_session
+            )
+        return self.content_managers[user.id]
+
+    def create_media_manager(self, user: user_types):
+        if user.id not in self.media_managers:
+            self.media_managers[user.id] = MediaManager()
+        return self.media_managers[user.id]
+
+    def get_archive_db_api(self):
+        return self.server_manager.ultima_archive_db_api
 
     async def configure_datascraper_jobs(self):
         api = self.datascraper.api
@@ -151,6 +232,42 @@ class StreamlinedDatascraper:
         return final_valid_user_set
 
     # Prepares the API links to be scraped
+    async def scrape_vault(
+        self, user: user_types, db_user: UserModel, content_type: str
+    ):
+        current_job = user.get_current_job()
+        if not current_job:
+            return
+        authed: auth_types = user.get_authed()
+        site_config = self.datascraper.site_config
+        if isinstance(authed, OnlyFansAuthModel) and user.is_authed_user():
+            vault = await authed.get_vault_lists()
+            vault_item = vault.resolve(name=content_type)
+            assert vault_item
+            vault_item_medias = await vault_item.get_medias()
+            media_metadatas: list[MediaMetadata] = []
+            for vault_item_media in vault_item_medias:
+                content_manager = self.resolve_content_manager(user)
+                media_metadata = MediaMetadata(
+                    vault_item_media["id"],
+                    vault_item_media["type"],
+                    content_manager=content_manager,
+                )
+                media_metadata.raw_extractor(user, vault_item_media)
+                reformat_manager = ReformatManager(authed, self.filesystem_manager)
+                reformat_item = reformat_manager.prepare_reformat(media_metadata)
+                file_directory = reformat_item.reformat(
+                    site_config.download_setup.directory_format
+                )
+                reformat_item.directory = file_directory
+                file_path = reformat_item.reformat(
+                    site_config.download_setup.filename_format
+                )
+                media_metadata.directory = file_directory
+                media_metadata.filename = file_path.name
+                media_metadatas.append(media_metadata)
+                pass
+        current_job.done = True
 
     async def prepare_scraper(
         self,
@@ -172,53 +289,41 @@ class StreamlinedDatascraper:
                 case "Posts":
                     temp_master_set = await self.datascraper.get_all_posts(user)
                 case "Messages":
-                    site_api = self.server_manager.ultima_archive_db_api.get_site_api(
-                        authed.get_api().site_name
+                    db_message = await find_earliest_non_downloaded_message(
+                        user, self.datascraper
                     )
-                    temp_db_messages = await site_api.schema.session.scalars(
-                        select(DBMessageModel)
-                        .where(
-                            or_(
-                                and_(
-                                    DBMessageModel.user_id == authed.id,
-                                    DBMessageModel.receiver_id == user.id,
-                                ),
-                                and_(
-                                    DBMessageModel.user_id == user.id,
-                                    DBMessageModel.receiver_id == authed.id,
-                                ),
-                            )
-                        )
-                        .order_by(DBMessageModel.id.desc())
-                    )
-                    db_messages = temp_db_messages.all()
-                    last_db_message = None
-                    cutoff_id = None
-                    if db_messages:
-                        if all(x.verified for x in db_messages):
-                            last_db_message = db_messages[0]
-                            cutoff_id = last_db_message.id
+                    cutoff_id = db_message.id if db_message else None
                     temp_master_set = await user.get_messages(cutoff_id=cutoff_id)
-                case "Archived":
-                    pass
                 case "Chats":
                     pass
                 case "Highlights":
                     pass
                 case "MassMessages":
-                    if user.is_me() and isinstance(authed, OFAuthModel):
-                        mass_message_stats = await authed.get_mass_message_stats()
-                        temp_master_set = []
-                        for mass_message_stat in mass_message_stats:
-                            mass_message = await mass_message_stat.get_mass_message()
-                            temp_master_set.append(mass_message)
-                    pass
+                    if isinstance(authed, OnlyFansAuthModel):
+                        if user.is_authed_user():
+                            mass_message_stats = await authed.get_mass_message_stats()
+                            temp_master_set = []
+                            for mass_message_stat in mass_message_stats:
+                                mass_message = (
+                                    await mass_message_stat.get_mass_message()
+                                )
+                                temp_master_set.append(mass_message)
+                        else:
+                            db_message = await find_earliest_non_downloaded_message(
+                                user, self.datascraper
+                            )
+                            cutoff_id = db_message.id if db_message else None
+                            mass_messages = await user.get_mass_messages(
+                                message_cutoff_id=cutoff_id
+                            )
+                            temp_master_set.extend(mass_messages)
                 case _:
                     raise Exception(f"{content_type} is an invalid choice")
         # Adding paid content and removing duplicates by id
         if isinstance(user, ultima_scraper_api.onlyfans_classes.user_model.create_user):
             for paid_content in await user.get_paid_contents(content_type):
                 temp_master_set.append(paid_content)
+            pass
             temp_master_set = list(
                 {getattr(obj, "id"): obj for obj in temp_master_set}.values()
             )
@@ -258,7 +363,8 @@ class StreamlinedDatascraper:
             final_content, _final_directories = new_metadata
             if new_metadata:
                 new_metadata_content = final_content
-                subscription.content_manager.set_content(api_type, new_metadata_content)
+                content_manager = self.resolve_content_manager(subscription)
+                content_manager.set_content(api_type, new_metadata_content)
                 if new_metadata_content:
                     pass
             else:
@@ -266,46 +372,68 @@ class StreamlinedDatascraper:
         return True
 
     # Downloads scraped content
-
     async def prepare_downloads(self, performer: user_types, api_type: str):
-        current_job = performer.get_current_job()
-        if not getattr(performer.content_manager.categorized, api_type):
-            current_job.done = True
-            return
-        api = performer.get_api()
-        assert current_job
-        site_api = self.server_manager.ultima_archive_db_api.get_site_api(api.site_name)
-        async with site_api.get_session_maker() as session:
-            site_api.set_session(session)
-            db_user = await site_api.get_user(performer.id)
-            assert db_user
-            await db_user.awaitable_attrs.content_manager
+        async with self.datascraper.server_manager.ultima_archive_db_api.create_site_api(
+            performer.get_api().site_name
+        ) as site_db_api:
+            current_job = performer.get_current_job()
 
-            contents: dict[
-                int, ContentMetadata
-            ] = performer.content_manager.get_contents(api_type)
-            final_download_set = set(contents.values())
-            total_media_count = len(final_download_set)
-            download_media_count = 0
-
+            db_performer = await site_db_api.get_user(performer.id)
+            assert db_performer
             global_settings = performer.get_api().get_global_settings()
             filesystem_manager = self.datascraper.filesystem_manager
             performer_directory_manager = filesystem_manager.get_directory_manager(
                 performer.id
             )
+            filesystem_manager = self.datascraper.filesystem_manager
+            content_manager = self.resolve_content_manager(performer)
+            db_medias = db_performer.content_manager.get_media_manager().medias
+            final_download_set: set[MediaMetadata] = set()
+            for db_media in db_medias.values():
+                content_info = None
+                if api_type == "Uncategorized":
+                    await db_media.awaitable_attrs.content_media_assos
+                    if not db_media.content_media_assos:
+                        continue
+                    if len(db_media.filepaths) > 1:
+                        continue
+                else:
+                    db_content = await db_media.find_content(api_type)
+                    if not db_content:
+                        continue
+                    content_info = (db_content.id, api_type)
+                db_filepath = db_media.find_filepath(content_info)
+                if db_filepath:
+                    if api_type == "Uncategorized":
+                        media_metadata = content_manager.media_manager.medias.get(
+                            db_media.id
+                        )
+                    else:
+                        media_metadata = content_manager.find_media(
+                            category=api_type, media_id=db_media.id
+                        )
+                    if media_metadata:
+                        media_metadata.__db_media__ = db_media
+                        final_download_set.add(media_metadata)
+            total_media_count = len(final_download_set)
+            download_media_count = 0
             directory = performer_directory_manager.user.download_directory
-            string = "Processing Download:\n"
-            string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
-            print(string)
+            if final_download_set:
+                string = "Processing Download:\n"
+                string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
+                print(string)
             download_manager = DownloadManager(
                 performer.get_authed(),
                 filesystem_manager,
                 final_download_set,
                 global_settings.tools.reformatter.active,
             )
-            _result = await download_manager.bulk_download()
-            await site_api.schema.session.commit()
-            current_job.done = True
+            await download_manager.bulk_download()
+            await site_db_api.schema.session.commit()
+            if final_download_set:
+                pass
+            if current_job:
+                current_job.done = True
 
     async def manage_subscriptions(
         self,

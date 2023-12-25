@@ -7,8 +7,12 @@ from urllib.parse import ParseResult, urlparse
 
 import ultima_scraper_api
 from sqlalchemy import inspect
+from ultima_scraper_api.apis.onlyfans import preview_url_picker, url_picker
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+)
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
     SqliteDatabase,
@@ -48,6 +52,9 @@ class DBContentExtractor:
     def get_user_id(self):
         return self.item.user_id
 
+    def get_queue_id(self):
+        return self.item.queue_id
+
     def get_text(self):
         if isinstance(self.item, DBStoryModel):
             return None
@@ -86,7 +93,8 @@ class DBContentExtractor:
             new_asset = MediaMetadata(
                 media_item.id,
                 true_media_type,
-                content_metadata,
+                content_manager=content_metadata.content_manager,
+                content_metadata=content_metadata,
                 created_at=content_metadata.created_at,
             )
             new_asset.urls = [media_item.url]
@@ -123,6 +131,14 @@ class ApiExtractor:
 
     def get_user_id(self):
         return self.item.get_author().id
+
+    def get_queue_id(self):
+        if isinstance(self.item, ultima_scraper_api.message_types):
+            return self.item.queue_id
+
+    def get_is_from_queue(self):
+        if isinstance(self.item, ultima_scraper_api.message_types):
+            return self.item.is_from_queue
 
     def get_text(self):
         if isinstance(self.item, ultima_scraper_api.post_types):
@@ -191,9 +207,17 @@ class ApiExtractor:
             new_asset = MediaMetadata(
                 asset_metadata["id"],
                 media_type,
-                content_metadata,
+                content_manager=content_metadata.content_manager,
+                content_metadata=content_metadata,
                 created_at=media_created_at,
             )
+            new_asset.author = author
+            new_asset.user_id = author.id
+            media_manager = content_metadata.content_manager.media_manager
+            if new_asset.id:
+                media_manager.medias[new_asset.id] = new_asset
+            else:
+                media_manager.invalid_medias.append(new_asset)
             main_url = self.item.url_picker(asset_metadata)
             preview_url = self.item.preview_url_picker(asset_metadata)
             authed = author.get_authed()
@@ -239,10 +263,16 @@ class ApiExtractor:
 
 
 class ContentMetadata:
-    def __init__(self, content_id: int, api_type: str) -> None:
+    def __init__(
+        self,
+        content_id: int,
+        api_type: str,
+        content_manager: ContentManager,
+    ) -> None:
         self.content_id = content_id
         self.user_id: int | None = None
         self.receiver_id: int | None = None
+        self.queue_id: int | None = None
         self.text: str | None = None
         self.preview_media_ids: list[int] | list[dict[str, Any]] = []
         self.archived: bool = False
@@ -251,15 +281,19 @@ class ContentMetadata:
         self.price: float | None = None
         self.paid: bool | None = False
         self.deleted: bool = False
+        self.is_from_queue: bool = False
         self.__raw__: Any | None = None
         self.__soft__: Any = None
         self.__db_content__: DBStoryModel | DBPostModel | DBMessageModel | None = None
         self.__legacy__ = False
+        self.content_manager = content_manager
 
     async def resolve_extractor(self, result: ApiExtractor | DBContentExtractor):
         self.content_id = result.get_id()
         self.user_id = result.get_user_id()
         self.receiver_id = result.get_receiver_id()
+        self.queue_id = result.get_queue_id()
+        self.is_from_queue = bool(result.get_is_from_queue())
         self.text = result.get_text()
         self.preview_media_ids = result.get_preview_ids()
         self.archived = result.resolve_archived()
@@ -304,9 +338,10 @@ class ContentMetadata:
 class MediaMetadata:
     def __init__(
         self,
-        media_id: int | None,
+        media_id: int,
         media_type: str,
-        content_metadata: ContentMetadata,
+        content_manager: ContentManager,
+        content_metadata: ContentMetadata | None = None,
         urls: list[str] = [],
         preview: bool = False,
         created_at: datetime | None = None,
@@ -322,10 +357,59 @@ class MediaMetadata:
         self.linked = None
         self.drm = drm
         self.key: str = ""
-        self.created_at = created_at or content_metadata.created_at
-        self.__raw__: Any | None = None
+        self.created_at = created_at
         self.__content_metadata__ = content_metadata
         self.__db_media__: DBMediaModel | None = None
+        self.content_manager = content_manager
+        assert self.id
+        self.content_manager.media_manager.medias[self.id] = self
+
+    def get_author(self):
+        return self.author
+
+    def raw_extractor(self, author: user_types, raw_media: dict[str, Any]):
+        self.author = author
+        self.user_id = author.id
+        assert self.id
+        raw_media_type = raw_media["type"]
+        if "mimetype" in raw_media:
+            raw_media_type: str = raw_media["mimetype"].split("/")[0]
+        self.media_type = author.get_api().MediaTypes().find_by_value(raw_media_type)
+        self.drm = bool(author.get_authed().drm.has_drm(raw_media))
+        main_url = self.url_picker(raw_media)
+        preview_url = self.preview_url_picker(raw_media)
+        matches = ["us", "uk", "ca", "ca2", "de"]
+        self.urls = []
+        for url in [main_url, preview_url].copy():
+            if url:
+                if url.hostname:
+                    subdomain = url.hostname.split(".")[1]
+                    if any(subdomain in nm for nm in matches):
+                        subdomain = url.hostname.split(".")[1]
+                        if "upload" in subdomain:
+                            continue
+                        if "convert" in subdomain:
+                            continue
+                self.urls.append(url.geturl())
+        if (
+            self.__content_metadata__
+            and self.id in self.__content_metadata__.preview_media_ids
+        ):
+            self.preview = True
+
+        if isinstance(raw_media["createdAt"], str):
+            media_created_at = datetime.fromisoformat(raw_media["createdAt"])
+        else:
+            media_created_at = datetime.fromtimestamp(raw_media["createdAt"])
+        self.created_at = media_created_at
+        self.__raw__ = raw_media
+        pass
+
+    def url_picker(self, media_item: dict[str, Any], video_quality: str = ""):
+        return url_picker(self.author, media_item, video_quality)
+
+    def preview_url_picker(self, media_item: dict[str, Any]):
+        return preview_url_picker(media_item)
 
     def find_by_url(self, url: ParseResult):
         for media_url in self.urls:
@@ -340,6 +424,9 @@ class MediaMetadata:
     def get_filepath(self):
         assert self.directory and self.filename
         return Path(self.directory, self.filename)
+
+    def get_content_metadata(self):
+        return self.__content_metadata__
 
 
 class MetadataManager:
@@ -430,7 +517,7 @@ class MetadataManager:
             new_metadata_set: list[dict[str, Any]] | dict[
                 str, Any
             ] = main_helper.import_json(metadata_filepath)
-            content_types = self.subscription.get_api().ContentTypes().get_keys()
+            content_types = self.subscription.get_api().CategorizedContent().get_keys()
             final_stem = metadata_filepath.stem
             patterns = []
             underscore_pattern = r"(_\d+)"
@@ -466,7 +553,9 @@ class MetadataManager:
                         ):
                             item = new_metadata_set["valid"][0]
                             directory = item["directory"]
-                            content_types = self.subscription.get_api().ContentTypes()
+                            content_types = (
+                                self.subscription.get_api().CategorizedContent()
+                            )
                             temp_content_type = content_types.path_to_key(
                                 Path(directory)
                             )
@@ -559,8 +648,9 @@ class MetadataManager:
                                     media_metadata = MediaMetadata(
                                         asset_json.get("media_id"),
                                         media_type,
-                                        content_metadata,
                                         urls,
+                                        content_manager=content_metadata.content_manager,
+                                        content_metadata=content_metadata,
                                     )
                                     pass
                                 media_metadata.directory = Path(asset_json["directory"])
@@ -618,7 +708,7 @@ class MetadataManager:
                 )
                 if not archived_db_manager.session.bind:
                     continue
-                for api_type, _value in api.ContentTypes():
+                for api_type, _value in api.CategorizedContent():
                     database_path = final_metadata.joinpath(f"{api_type}.db")
                     legacy_db_manager = DatabaseManager().get_sqlite_db(
                         database_path, legacy=True
