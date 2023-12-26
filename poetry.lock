@@ -2855,13 +2855,13 @@ xmltodict = ">=0.13.0,<0.14.0"
 
 [[package]]
 name = "ultima-scraper-db"
-version = "0.1.6"
+version = "0.2.0"
 description = ""
 optional = false
 python-versions = ">=3.10,<3.12"
 files = [
-    {file = "ultima_scraper_db-0.1.6-py3-none-any.whl", hash = "sha256:8fb457bf40e38cc01cdcbf3cf8a92c814b5eef767a68d235a48b57e120cd3c74"},
-    {file = "ultima_scraper_db-0.1.6.tar.gz", hash = "sha256:bc93443314a4b3341846ecc59ca843d570b60033eafcac1066b5903c5288ad07"},
+    {file = "ultima_scraper_db-0.2.0-py3-none-any.whl", hash = "sha256:ef110ec99d13cdf02f7d81a29429b5adc63ac6b676c34dcb5005209a8d37aec7"},
+    {file = "ultima_scraper_db-0.2.0.tar.gz", hash = "sha256:5effc30231d4e61940d8404d2d8d90d9b0a311760c9ce05392e7ec3107c08565"},
 ]
 
 [package.dependencies]
@@ -3351,4 +3351,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.12"
-content-hash = "15425d1714136f9bf0a65335793b013da46de6bd0e5d4032b9558d6983ea3858"
+content-hash = "15c5888a7b481533184ae92e132b4048962bf937c9d7a11b561053fa13b1b85c"

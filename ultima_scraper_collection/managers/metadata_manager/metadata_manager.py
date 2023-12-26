@@ -10,9 +10,7 @@ from sqlalchemy import inspect
 from ultima_scraper_api.apis.onlyfans import preview_url_picker, url_picker
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-)
+from ultima_scraper_collection.managers.content_manager import ContentManager
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
     DBCollection,
     SqliteDatabase,

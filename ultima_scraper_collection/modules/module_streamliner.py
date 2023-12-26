@@ -266,7 +266,6 @@ class StreamlinedDatascraper:
                 media_metadata.directory = file_directory
                 media_metadata.filename = file_path.name
                 media_metadatas.append(media_metadata)
-                pass
         current_job.done = True
 
     async def prepare_scraper(
@@ -378,7 +377,9 @@ class StreamlinedDatascraper:
         ) as site_db_api:
             current_job = performer.get_current_job()
 
-            db_performer = await site_db_api.get_user(performer.id)
+            db_performer = await site_db_api.get_user(
+                performer.id, load_content=True, load_media=True
+            )
             assert db_performer
             global_settings = performer.get_api().get_global_settings()
             filesystem_manager = self.datascraper.filesystem_manager
@@ -393,7 +394,7 @@ class StreamlinedDatascraper:
                 content_info = None
                 if api_type == "Uncategorized":
                     await db_media.awaitable_attrs.content_media_assos
-                    if not db_media.content_media_assos:
+                    if db_media.content_media_assos:
                         continue
                     if len(db_media.filepaths) > 1:
                         continue
