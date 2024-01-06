@@ -2,7 +2,7 @@ from itertools import chain
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ultima_scraper_api.managers.session_manager import AuthedSession
+    from ultima_scraper_api import auth_types
     from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
         MediaMetadata,
     )
@@ -26,8 +26,9 @@ class DefaultCategorizedContent:
 
 
 class ContentManager:
-    def __init__(self, auth_session: "AuthedSession") -> None:
-        self.auth_session = auth_session
+    def __init__(self, authed: "auth_types") -> None:
+        self.authed = authed
+        self.auth_session = authed.auth_session
         self.categorized = DefaultCategorizedContent()
         self.media_manager: MediaManager = MediaManager()
 
