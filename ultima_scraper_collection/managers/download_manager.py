@@ -62,14 +62,17 @@ class DownloadManager:
         responses: list[ClientResponse] = []
 
         if pssh:
-            soft_data = content_metadata.__soft__
-            raw_data = soft_data.__raw__.copy()
-            if (
-                isinstance(soft_data, MassMessageModel)
-                and soft_data
-                and soft_data.author.is_authed_user()
-            ):
-                raw_data["responseType"] = ""
+            if content_metadata:
+                soft_data = content_metadata.__soft__
+                raw_data = soft_data.__raw__.copy()
+                if (
+                    isinstance(soft_data, MassMessageModel)
+                    and soft_data
+                    and soft_data.author.is_authed_user()
+                ):
+                    raw_data["responseType"] = ""
+            else:
+                raw_data = {"responseType": ""}
             license = await drm.get_license(raw_data, media_item, pssh)
             keys = await drm.get_keys(license)
             content_key = keys[-1]
