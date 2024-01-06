@@ -1,9 +1,10 @@
-from ultima_scraper_collection.config import UltimaScraperCollectionConfig
-from ultima_scraper_collection.projects.project_manager import Project
 from ultima_scraper_db.databases.ultima_archive import merged_metadata
 from ultima_scraper_db.databases.ultima_archive.api.client import UAClient
 from ultima_scraper_db.databases.ultima_archive.database_api import ArchiveAPI
 from ultima_scraper_db.managers.database_manager import Alembica
+
+from ultima_scraper_collection.config import UltimaScraperCollectionConfig
+from ultima_scraper_collection.projects.project_manager import Project
 
 
 class UltimaArchiveProject(Project):
@@ -11,7 +12,7 @@ class UltimaArchiveProject(Project):
         # We could pass a database manager instead of config
         db_info = config.settings.databases[0].connection_info.dict()
         ultima_archive_db = await super()._init_db(
-            db_info, Alembica(migrate=False), merged_metadata
+            db_info, Alembica(generate=False, migrate=False), merged_metadata
         )
         self.ultima_archive_db_api = await ArchiveAPI(ultima_archive_db).init()
         self.fast_api = UAClient()
