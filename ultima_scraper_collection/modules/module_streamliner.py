@@ -146,11 +146,15 @@ class StreamlinedDatascraper:
         self.media_managers: dict[int, MediaManager] = {}
 
     def resolve_content_manager(self, user: user_types):
-        if user.id not in self.content_managers:
-            self.content_managers[user.id] = ContentManager(
-                user.get_authed().auth_session
-            )
-        return self.content_managers[user.id]
+        content_manager = self.content_managers.get(user.id)
+        authed = user.get_authed()
+        if content_manager:
+            if content_manager.authed.id != authed.id:
+                content_manager = ContentManager(authed)
+        else:
+            content_manager = ContentManager(authed)
+        self.content_managers[user.id] = content_manager
+        return content_manager
 
     def create_media_manager(self, user: user_types):
         if user.id not in self.media_managers:
@@ -190,7 +194,7 @@ class StreamlinedDatascraper:
             [
                 user.scrape_whitelist.append("Messages")
                 for user in chat_users
-                if not await user.is_subscribed() or not scraping_subscriptions
+                if not user.is_subscribed() or not scraping_subscriptions
             ]
             [valid_user_list.add(x) for x in chat_users]
 
@@ -371,70 +375,67 @@ class StreamlinedDatascraper:
         return True
 
     # Downloads scraped content
-    async def prepare_downloads(self, performer: user_types, api_type: str):
-        async with self.datascraper.server_manager.ultima_archive_db_api.create_site_api(
-            performer.get_api().site_name
-        ) as site_db_api:
-            current_job = performer.get_current_job()
-
-            db_performer = await site_db_api.get_user(
-                performer.id, load_content=True, load_media=True
-            )
-            assert db_performer
-            global_settings = performer.get_api().get_global_settings()
-            filesystem_manager = self.datascraper.filesystem_manager
-            performer_directory_manager = filesystem_manager.get_directory_manager(
-                performer.id
-            )
-            filesystem_manager = self.datascraper.filesystem_manager
-            content_manager = self.resolve_content_manager(performer)
-            db_medias = db_performer.content_manager.get_media_manager().medias
-            final_download_set: set[MediaMetadata] = set()
-            for db_media in db_medias.values():
-                content_info = None
+    async def prepare_downloads(
+        self, performer: user_types, db_performer: DBUserModel, api_type: str
+    ):
+        site_db_api = self.server_manager.ultima_archive_db_api.find_site_api(
+            self.datascraper.api.site_name
+        )
+        current_job = performer.get_current_job()
+        global_settings = performer.get_api().get_global_settings()
+        filesystem_manager = self.datascraper.filesystem_manager
+        performer_directory_manager = filesystem_manager.get_directory_manager(
+            performer.id
+        )
+        filesystem_manager = self.datascraper.filesystem_manager
+        content_manager = self.resolve_content_manager(performer)
+        db_medias = db_performer.content_manager.get_media_manager().medias
+        final_download_set: set[MediaMetadata] = set()
+        for db_media in db_medias.values():
+            content_info = None
+            if api_type == "Uncategorized":
+                await db_media.awaitable_attrs.content_media_assos
+                if db_media.content_media_assos:
+                    continue
+                if len(db_media.filepaths) > 1:
+                    continue
+            else:
+                db_content = await db_media.find_content(api_type)
+                if not db_content:
+                    continue
+                content_info = (db_content.id, api_type)
+            db_filepath = db_media.find_filepath(content_info)
+            if db_filepath:
                 if api_type == "Uncategorized":
-                    await db_media.awaitable_attrs.content_media_assos
-                    if db_media.content_media_assos:
-                        continue
-                    if len(db_media.filepaths) > 1:
-                        continue
+                    media_metadata = content_manager.media_manager.medias.get(
+                        db_media.id
+                    )
                 else:
-                    db_content = await db_media.find_content(api_type)
-                    if not db_content:
-                        continue
-                    content_info = (db_content.id, api_type)
-                db_filepath = db_media.find_filepath(content_info)
-                if db_filepath:
-                    if api_type == "Uncategorized":
-                        media_metadata = content_manager.media_manager.medias.get(
-                            db_media.id
-                        )
-                    else:
-                        media_metadata = content_manager.find_media(
-                            category=api_type, media_id=db_media.id
-                        )
-                    if media_metadata:
-                        media_metadata.__db_media__ = db_media
-                        final_download_set.add(media_metadata)
-            total_media_count = len(final_download_set)
-            download_media_count = 0
-            directory = performer_directory_manager.user.download_directory
-            if final_download_set:
-                string = "Processing Download:\n"
-                string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
-                print(string)
-            download_manager = DownloadManager(
-                performer.get_authed(),
-                filesystem_manager,
-                final_download_set,
-                global_settings.tools.reformatter.active,
-            )
-            await download_manager.bulk_download()
-            await site_db_api.schema.session.commit()
-            if final_download_set:
-                pass
-            if current_job:
-                current_job.done = True
+                    media_metadata = content_manager.find_media(
+                        category=api_type, media_id=db_media.id
+                    )
+                if media_metadata:
+                    media_metadata.__db_media__ = db_media
+                    final_download_set.add(media_metadata)
+        total_media_count = len(final_download_set)
+        download_media_count = 0
+        directory = performer_directory_manager.user.download_directory
+        if final_download_set:
+            string = "Processing Download:\n"
+            string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
+            print(string)
+        download_manager = DownloadManager(
+            performer.get_authed(),
+            filesystem_manager,
+            final_download_set,
+            global_settings.tools.reformatter.active,
+        )
+        await download_manager.bulk_download()
+        await site_db_api.schema.session.commit()
+        if final_download_set:
+            pass
+        if current_job:
+            current_job.done = True
 
     async def manage_subscriptions(
         self,
@@ -512,11 +513,18 @@ class StreamlinedDatascraper:
                     performer_id=db_performer.id
                 )
                 if not paid_contents:
+                    # performer = await authed.get_user(db_performer.id)
+                    # if not performer.subscribed_by_data:
+                    #     return None
                     return None
                 else:
                     performer = paid_contents[0].get_author()
             else:
                 performer = subscriptions[0].user
+                if not performer.is_subscribed():
+                    paid_contents = await authed.get_paid_content(
+                        performer_id=db_performer.id
+                    )
         if isinstance(
             performer, ultima_scraper_api.onlyfans_classes.user_model.create_user
         ):
