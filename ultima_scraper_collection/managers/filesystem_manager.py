@@ -11,9 +11,8 @@ import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
-from ultima_scraper_renamer.reformat import FormatAttributes, ReformatItem
-
 from ultima_scraper_collection.helpers import main_helper
+from ultima_scraper_renamer.reformat import FormatAttributes, ReformatItem
 
 if TYPE_CHECKING:
     api_types = ultima_scraper_api.api_types
@@ -347,6 +346,12 @@ class FileManager:
         await self.update_files(prepared_metadata_format, "metadata_directory_format")
         await self.update_files(prepared_download_format, "file_directory_format")
 
+    async def refresh_files(self):
+        self.files = await self.directory_manager.walk(
+            self.directory_manager.user.download_directory
+        )
+        return self.files
+
     async def update_files(self, reformatter: ReformatItem, format_key: str):
         directory_manager = self.directory_manager
         formatted_directory = reformatter.remove_non_unique(
@@ -361,9 +366,34 @@ class FileManager:
         self.files.append(filepath)
         return True
 
-    async def remove_file(self, filepath: Path):
+    def remove_file(self, filepath: Path):
         self.files.remove(filepath)
         return True
+
+    def delete_path(self, filepath: Path):
+        if filepath.is_dir():
+            filepath.rmdir()
+        else:
+            self.remove_file(filepath)
+            filepath.unlink(missing_ok=True)
+        return True
+
+    async def cleanup(self):
+        unique: set[Path] = set()
+        await self.refresh_files()
+        for valid_file in self.find_string_in_path("__drm__"):
+            self.delete_path(valid_file)
+            unique.add(valid_file.parent)
+        for unique_file in unique:
+            self.delete_path(unique_file)
+        return True
+
+    def find_string_in_path(self, string: str):
+        valid_files: list[Path] = []
+        for file in self.files:
+            if string in file.as_posix():
+                valid_files.append(file)
+        return valid_files
 
     async def find_metadata_files(self, legacy_files: bool = True):
         new_list: list[Path] = []
