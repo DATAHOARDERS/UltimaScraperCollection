@@ -154,6 +154,8 @@ class ApiExtractor:
             final_preview_ids = self.item.preview or self.item.preview_ids
         elif isinstance(self.item, ultima_scraper_api.message_types):
             final_preview_ids = self.item.previews
+        elif isinstance(self.item, MassMessageModel):
+            final_preview_ids = self.item.previews
         else:
             final_preview_ids = []
         return final_preview_ids
@@ -235,7 +237,7 @@ class ApiExtractor:
                                 continue
                     new_asset.urls.append(url.geturl())
 
-            if int(new_asset.id) in content_metadata.preview_media_ids:
+            if new_asset.id and new_asset.id in content_metadata.preview_media_ids:
                 new_asset.preview = True
             new_asset.__raw__ = asset_metadata
             final_assets.append(new_asset)
@@ -401,7 +403,6 @@ class MediaMetadata:
             media_created_at = datetime.fromtimestamp(raw_media["createdAt"])
         self.created_at = media_created_at
         self.__raw__ = raw_media
-        pass
 
     def url_picker(self, media_item: dict[str, Any], video_quality: str = ""):
         return url_picker(self.author, media_item, video_quality)
@@ -431,10 +432,12 @@ class MetadataManager:
     def __init__(
         self,
         subscription: user_types,
+        content_manager: ContentManager,
         filesystem_manager: FilesystemManager,
         db_manager: SqliteDatabase | None = None,
     ) -> None:
         self.subscription = subscription
+        self.content_manager = content_manager
         self.filesystem_manager = filesystem_manager
         self.db_manager = db_manager
         self.metadatas = self.find_metadatas()
@@ -502,6 +505,7 @@ class MetadataManager:
             ]
             return merged_status
 
+        content_manager = self.content_manager
         for metadata_filepath in self.metadatas:
             if (
                 metadata_filepath.suffix != ".json"
@@ -643,12 +647,15 @@ class MetadataManager:
                                     asset_json.get("media_id"), urls
                                 )
                                 if not media_metadata:
+                                    media_id = asset_json.get("media_id")
+                                    if not media_id:
+                                        continue
                                     media_metadata = MediaMetadata(
-                                        asset_json.get("media_id"),
+                                        media_id,
                                         media_type,
-                                        urls,
-                                        content_manager=content_metadata.content_manager,
+                                        content_manager,
                                         content_metadata=content_metadata,
+                                        urls=urls,
                                     )
                                     pass
                                 media_metadata.directory = Path(asset_json["directory"])
@@ -665,7 +672,9 @@ class MetadataManager:
                                 )
                                 if not content_metadata:
                                     content_metadata = ContentMetadata(
-                                        item_item_json["post_id"], final_content_type
+                                        item_item_json["post_id"],
+                                        final_content_type,
+                                        content_manager,
                                     )
                                     self.legacy_content_metadatas.append(
                                         content_metadata
@@ -681,7 +690,9 @@ class MetadataManager:
                             )
                             if not content_metadata:
                                 content_metadata = ContentMetadata(
-                                    item_json["post_id"], final_content_type
+                                    item_json["post_id"],
+                                    final_content_type,
+                                    content_manager,
                                 )
                                 self.legacy_content_metadatas.append(content_metadata)
                             assign_metadata(content_metadata, item_json)
