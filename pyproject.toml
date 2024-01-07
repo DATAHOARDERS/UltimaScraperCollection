@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "2.1.7"
+version = "2.1.8"
 description = ""
 authors = ["UltimaHoarder <1285176+UltimaHoarder@users.noreply.github.com>"]
 packages = [{include = "ultima_scraper_collection"}]
@@ -24,7 +24,6 @@ fastapi = "^0.104.1"
 ultima-scraper-detector = "^0.1.0"
 inflection = "^0.5.1"
 alive-progress = "^3.1.5"
-ultima-scraper = "^9.0.0"
 [tool.poetry.group.dev.dependencies]
 python-semantic-release = "^7.33.2"
 black = {version = "^23.3.0", allow-prereleases = true}

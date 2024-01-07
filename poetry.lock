@@ -2842,32 +2842,14 @@ files = [
 ]
 
 [[package]]
-name = "ultima-scraper"
-version = "9.0.0"
-description = ""
-optional = false
-python-versions = ">=3.10,<3.12"
-files = [
-    {file = "ultima_scraper-9.0.0-py3-none-any.whl", hash = "sha256:fe381b559a8455d54dba3d37fa40ea21f9971201877a7e92253e6eb77598dce7"},
-    {file = "ultima_scraper-9.0.0.tar.gz", hash = "sha256:2ec736569abb6ef211b47be3a7ee4b5cc2e3e9dc070fb35d5108aae5a8fbe61b"},
-]
-
-[package.dependencies]
-requests = ">=2.26.0,<3.0.0"
-ultima-scraper-api = "2.2.0"
-ultima-scraper-collection = "2.1.6"
-ultima-scraper-db = "0.2.7"
-ultima-scraper-renamer = ">=1.0.0,<2.0.0"
-
-[[package]]
 name = "ultima-scraper-api"
-version = "2.2.0"
+version = "2.2.1"
 description = ""
 optional = false
 python-versions = ">=3.10,<3.12"
 files = [
-    {file = "ultima_scraper_api-2.2.0-py3-none-any.whl", hash = "sha256:9e67aa6072f4030b65dbbd3778c09903ee2b4d24083dad0d271d44fea3cda60d"},
-    {file = "ultima_scraper_api-2.2.0.tar.gz", hash = "sha256:f8d264d136d6d4365a3e2ae617debabf9f368b277458f79f71f26f5db568a4a1"},
+    {file = "ultima_scraper_api-2.2.1-py3-none-any.whl", hash = "sha256:49b79772345fd096c90c869f3a6cc6321bd6ec4c51b1cecde0765e2fa55bb669"},
+    {file = "ultima_scraper_api-2.2.1.tar.gz", hash = "sha256:63e6f5637330a792c288adb4f6747dd08f4119086898cd646f2bc44ed673a0bd"},
 ]
 
 [package.dependencies]
@@ -3388,4 +3370,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.12"
-content-hash = "b300da97d7171bade6d5757d7b00291da8fa9f84fa9676f70b41221169b002a3"
+content-hash = "15c5888a7b481533184ae92e132b4048962bf937c9d7a11b561053fa13b1b85c"
