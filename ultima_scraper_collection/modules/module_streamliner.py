@@ -8,22 +8,10 @@ import ultima_scraper_api
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import joinedload
 from tqdm.asyncio import tqdm_asyncio
+from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
 from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     create_user as OnlyFansUserModel,
 )
-from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -39,6 +27,19 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
 )
 from ultima_scraper_renamer.reformat import ReformatManager
 
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
+
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
 message_types = ultima_scraper_api.message_types
@@ -47,7 +48,6 @@ subscription_types = ultima_scraper_api.subscription_types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ultima_scraper.ultima_scraper import UltimaScraper
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
         FanslyDataScraper,
     )
@@ -144,7 +144,6 @@ class StreamlinedDatascraper:
         self.server_manager: ServerManager = server_manager
         self.content_managers: dict[int, ContentManager] = {}
         self.media_managers: dict[int, MediaManager] = {}
-        self.ultima_scraper: UltimaScraper | None = None
 
     def find_metadata_manager(self, user_id: int):
         return self.metadata_manager_users[user_id]
@@ -276,16 +275,28 @@ class StreamlinedDatascraper:
                 media_metadatas.append(media_metadata)
         current_job.done = True
 
-    async def paid_content_scraper(self, authed: auth_types, db_user: UserModel):
+    async def prepare_filesystem(self, performer: user_types):
+        await self.filesystem_manager.create_directory_manager(
+            self.site_config, performer  # type:ignore
+        )
+        await self.filesystem_manager.format_directories(performer)
+        metadata_manager = MetadataManager(
+            performer,
+            self.resolve_content_manager(performer),
+            self.filesystem_manager,
+        )
+        await metadata_manager.process_legacy_metadata()
+        self.metadata_manager_users[performer.id] = metadata_manager
+        return metadata_manager
+
+    async def paid_content_scraper(self, authed: auth_types):
         paid_contents = await authed.get_paid_content()
         datascraper = self.datascraper
         assert datascraper
-        ultima_scraper = datascraper.ultima_scraper
-        assert ultima_scraper
         unique_suppliers: set[user_types] = set()
         for paid_content in paid_contents:
             supplier = paid_content.get_author()
-            await ultima_scraper.prepare_filesystem(supplier)
+            await self.prepare_filesystem(supplier)
             content_manager = datascraper.resolve_content_manager(supplier)
             content_type = paid_content.get_content_type()
             result = await datascraper.media_scraper(
