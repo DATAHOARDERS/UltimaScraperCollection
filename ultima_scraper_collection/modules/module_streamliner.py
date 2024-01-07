@@ -145,6 +145,9 @@ class StreamlinedDatascraper:
         self.content_managers: dict[int, ContentManager] = {}
         self.media_managers: dict[int, MediaManager] = {}
 
+    def find_metadata_manager(self, user_id: int):
+        return self.metadata_manager_users[user_id]
+
     def resolve_content_manager(self, user: user_types):
         content_manager = self.content_managers.get(user.id)
         authed = user.get_authed()
@@ -519,6 +522,9 @@ class StreamlinedDatascraper:
                     return None
                 else:
                     performer = paid_contents[0].get_author()
+                    temp_performer = await authed.get_user(performer.id, refresh=True)
+                    if not temp_performer:
+                        performer.is_deleted = True
             else:
                 performer = subscriptions[0].user
                 if not performer.is_subscribed():
