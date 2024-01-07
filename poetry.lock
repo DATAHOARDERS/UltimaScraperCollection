@@ -2843,12 +2843,13 @@ files = [
 
 [[package]]
 name = "ultima-scraper-api"
-version = "2.1.9"
+version = "2.2.0"
 description = ""
 optional = false
 python-versions = ">=3.10,<3.12"
 files = [
-    {file = "ultima_scraper_api-2.1.9-py3-none-any.whl", hash = "sha256:29e6cce087455e3871589515d9e7f9a2a767e503564de1365aadc836897a1e0d"},
+    {file = "ultima_scraper_api-2.2.0-py3-none-any.whl", hash = "sha256:9e67aa6072f4030b65dbbd3778c09903ee2b4d24083dad0d271d44fea3cda60d"},
+    {file = "ultima_scraper_api-2.2.0.tar.gz", hash = "sha256:f8d264d136d6d4365a3e2ae617debabf9f368b277458f79f71f26f5db568a4a1"},
 ]
 
 [package.dependencies]
@@ -2916,13 +2917,13 @@ uvicorn = ">=0.24.0.post1,<0.25.0"
 
 [[package]]
 name = "ultima-scraper-renamer"
-version = "1.1.6"
+version = "1.1.7"
 description = ""
 optional = false
 python-versions = ">=3.10,<3.12"
 files = [
-    {file = "ultima_scraper_renamer-1.1.6-py3-none-any.whl", hash = "sha256:4154c547c75c4b469d096ff3b5fe922534897f3831dab949e2bba6e27af74953"},
-    {file = "ultima_scraper_renamer-1.1.6.tar.gz", hash = "sha256:37e90326a421ccd18f18fcc98f71ce859a4f0a687507369f23a64181b50d8906"},
+    {file = "ultima_scraper_renamer-1.1.7-py3-none-any.whl", hash = "sha256:f948d66d10b5244e58957b95838ebb7642c295f96117993596cd5c96957ffdaf"},
+    {file = "ultima_scraper_renamer-1.1.7.tar.gz", hash = "sha256:c1900544263096eac3662861ab27b292955917a9044124b12da5740b973b7389"},
 ]
 
 [package.dependencies]
