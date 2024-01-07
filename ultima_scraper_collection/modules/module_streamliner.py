@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
         ContentMetadata,
     )
+    from ultima_scraper.ultima_scraper import UltimaScraper
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
 
@@ -144,6 +145,7 @@ class StreamlinedDatascraper:
         self.server_manager: ServerManager = server_manager
         self.content_managers: dict[int, ContentManager] = {}
         self.media_managers: dict[int, MediaManager] = {}
+        self.ultima_scraper: UltimaScraper | None = None
 
     def find_metadata_manager(self, user_id: int):
         return self.metadata_manager_users[user_id]
