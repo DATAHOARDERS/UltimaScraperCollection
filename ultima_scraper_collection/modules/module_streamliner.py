@@ -8,6 +8,9 @@ import ultima_scraper_api
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import joinedload
 from tqdm.asyncio import tqdm_asyncio
+from ultima_scraper_api.apis.onlyfans.classes.user_model import (
+    create_user as OnlyFansUserModel,
+)
 from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
 from ultima_scraper_collection.config import site_config_types
 from ultima_scraper_collection.managers.content_manager import (
@@ -44,17 +47,13 @@ subscription_types = ultima_scraper_api.subscription_types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ultima_scraper_api.managers.session_manager import AuthedSession
+    from ultima_scraper.ultima_scraper import UltimaScraper
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
         FanslyDataScraper,
     )
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.onlyfans import (
         OnlyFansDataScraper,
     )
-    from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-        ContentMetadata,
-    )
-    from ultima_scraper.ultima_scraper import UltimaScraper
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
 
@@ -276,6 +275,44 @@ class StreamlinedDatascraper:
                 media_metadata.filename = file_path.name
                 media_metadatas.append(media_metadata)
         current_job.done = True
+
+    async def paid_content_scraper(self, authed: auth_types, db_user: UserModel):
+        paid_contents = await authed.get_paid_content()
+        datascraper = self.datascraper
+        assert datascraper
+        ultima_scraper = datascraper.ultima_scraper
+        assert ultima_scraper
+        unique_suppliers: set[user_types] = set()
+        for paid_content in paid_contents:
+            supplier = paid_content.get_author()
+            await ultima_scraper.prepare_filesystem(supplier)
+            content_manager = datascraper.resolve_content_manager(supplier)
+            content_type = paid_content.get_content_type()
+            result = await datascraper.media_scraper(
+                paid_content, supplier, content_type  # type:ignore
+            )
+            content_manager.set_content(
+                content_type,
+                result["content"],
+            )
+            unique_suppliers.add(supplier)
+
+        for supplier in unique_suppliers:
+            if isinstance(supplier, OnlyFansUserModel):
+                content_manager = datascraper.resolve_content_manager(supplier)
+                supplier.cache.messages.activate()
+                contents = await supplier.get_mass_messages()
+                supplier.cache.messages.deactivate()
+
+                for content in contents:
+                    content_type = content.get_content_type()
+                    result = await datascraper.media_scraper(
+                        content, supplier, content_type  # type:ignore
+                    )
+                    content_manager.set_content(
+                        content_type,
+                        result["content"],
+                    )
 
     async def prepare_scraper(
         self,
