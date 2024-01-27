@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import copy
-from itertools import product
-from typing import Any, Optional
+from typing import Any
 
 import ultima_scraper_api
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import joinedload
-from tqdm.asyncio import tqdm_asyncio
 from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
 from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     create_user as OnlyFansUserModel,
 )
+from ultima_scraper_api.helpers.main_helper import ProgressBar
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -56,29 +56,6 @@ if TYPE_CHECKING:
     )
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
-
-
-class download_session(tqdm_asyncio):
-    def start(
-        self,
-        unit: str = "B",
-        unit_scale: bool = True,
-        miniters: int = 1,
-        tsize: int = 0,
-    ):
-        self.unit = unit
-        self.unit_scale = unit_scale
-        self.miniters = miniters
-        self.total = 0
-        self.colour = "Green"
-        if tsize:
-            tsize = int(tsize)
-            self.total += tsize
-
-    def update_total_size(self, tsize: Optional[int]):
-        if tsize:
-            tsize = int(tsize)
-            self.total += tsize
 
 
 async def find_earliest_non_downloaded_message(
@@ -404,34 +381,26 @@ class StreamlinedDatascraper:
     ):
         if not master_set:
             return False
-        # if  api_type != "Posts":
-        #     return
-        authed = subscription.get_authed()
         unrefined_set = []
-        with authed.get_pool() as pool:
-            print(f"Processing Scraped {api_type}")
-            tasks = pool.starmap(
-                self.datascraper.media_scraper,
-                product(
-                    master_set,
-                    [subscription],
-                    [api_type],
-                ),
+        tasks = [
+            asyncio.create_task(
+                self.datascraper.media_scraper(x, subscription, api_type)  # type:ignore
             )
-            settings = {"colour": "MAGENTA"}
-            unrefined_set: list[dict[str, Any]] = await tqdm_asyncio.gather(
-                *tasks, **settings
-            )
-            new_metadata = metadata_manager.merge_content_and_directories(unrefined_set)
-            final_content, _final_directories = new_metadata
-            if new_metadata:
-                new_metadata_content = final_content
-                content_manager = self.resolve_content_manager(subscription)
-                content_manager.set_content(api_type, new_metadata_content)
-                if new_metadata_content:
-                    pass
-            else:
-                print(f"No {api_type} found.")
+            for x in master_set
+        ]
+        unrefined_set: list[dict[str, Any]] = await ProgressBar(
+            f"Processing Scraped {api_type}"
+        ).gather(tasks)
+        new_metadata = metadata_manager.merge_content_and_directories(unrefined_set)
+        final_content, _final_directories = new_metadata
+        if new_metadata:
+            new_metadata_content = final_content
+            content_manager = self.resolve_content_manager(subscription)
+            content_manager.set_content(api_type, new_metadata_content)
+            if new_metadata_content:
+                pass
+        else:
+            print(f"No {api_type} found.")
         return True
 
     # Downloads scraped content
