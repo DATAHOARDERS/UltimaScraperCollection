@@ -773,8 +773,8 @@ class MetadataManager:
                 )
                 new_filepath.parent.mkdir(exist_ok=True)
                 archived_database_path.rename(new_filepath)
-                await filesystem_manager_user.remove_file(archived_database_path)
-                await filesystem_manager_user.add_file(new_filepath)
+                filesystem_manager_user.remove_file(archived_database_path)
+                filesystem_manager_user.add_file(new_filepath)
 
     def export(self, api_type: str, datas: list[dict[str, Any]]):
         if api_type == "Posts":

@@ -11,7 +11,8 @@ import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
-from ultima_scraper_collection.helpers import main_helper
+
+from ultima_scraper_collection.helpers import main_helper as usc_helper
 from ultima_scraper_renamer.reformat import FormatAttributes, ReformatItem
 
 if TYPE_CHECKING:
@@ -60,12 +61,10 @@ class FilesystemManager:
         return self.file_manager_users[user_id]
 
     def activate_directory_manager(self, site_config: site_config_types):
-        from ultima_scraper_collection.helpers import main_helper
-
-        root_metadata_directory = main_helper.check_space(
+        root_metadata_directory = usc_helper.check_space(
             site_config.metadata_setup.directories
         )
-        root_download_directory = main_helper.check_space(
+        root_download_directory = usc_helper.check_space(
             site_config.download_setup.directories
         )
         self.directory_manager = DirectoryManager(
@@ -329,7 +328,7 @@ class DirectoryManager:
             return final_directory
 
     async def walk(self, directory: Path):
-        return await main_helper.walk(directory)
+        return await usc_helper.walk(directory)
 
 
 class FileManager:
@@ -362,7 +361,7 @@ class FileManager:
         self.files.extend(files)
         return files
 
-    async def add_file(self, filepath: Path):
+    def add_file(self, filepath: Path):
         self.files.append(filepath)
         return True
 
