@@ -4,11 +4,15 @@ from shutil import disk_usage
 from typing import Any
 
 from ultima_scraper_api import user_types
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    UserModel as DBUserModel,
-)
 
 from ultima_scraper_collection.config import Directory
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+        UserModel as DBUserModel,
+    )
 
 
 def check_space(
@@ -44,8 +48,20 @@ from ultima_scraper_api.apis.onlyfans.classes.user_model import (
 )
 
 
-async def is_valuable(user: DBUserModel | user_types):
-    # Checks if performer has active subscription or has supplied content to a buyer
+async def is_valuable(user: "DBUserModel | user_types"):
+    """
+    Checks if the user is valuable based on their subscription status or if they have supplied content to a buyer.
+
+    Args:
+        user (DBUserModel | user_types): The user to check.
+
+    Returns:
+        bool: True if the user is valuable, False otherwise.
+    """
+    from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+        UserModel as DBUserModel,
+    )
+
     if isinstance(user, DBUserModel):
         if await user.find_buyers(active=True):
             return True
