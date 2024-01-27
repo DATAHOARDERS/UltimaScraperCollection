@@ -12,18 +12,6 @@ from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthMode
 from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     create_user as OnlyFansUserModel,
 )
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -38,6 +26,19 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     UserModel as DBUserModel,
 )
 from ultima_scraper_renamer.reformat import ReformatManager
+
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -111,9 +112,14 @@ async def find_earliest_non_downloaded_message(
 
     db_messages = temp_db_messages.unique().all()
     earliest_non_downloaded_message = None
+    found_media = False
 
     for db_message in db_messages:
         all_media_downloaded = False
+        if db_message.media:
+            found_media = True
+        else:
+            continue
         for media in db_message.media:
             for filepath in media.filepaths:
                 if not filepath.message:
@@ -128,6 +134,8 @@ async def find_earliest_non_downloaded_message(
                 or db_message.created_at < earliest_non_downloaded_message.created_at
             ):
                 earliest_non_downloaded_message = db_message
+    if found_media:
+        earliest_non_downloaded_message = db_messages[0]
     return earliest_non_downloaded_message
 
 
