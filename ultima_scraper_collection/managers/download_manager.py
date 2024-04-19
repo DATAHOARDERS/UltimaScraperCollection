@@ -9,6 +9,12 @@ from alive_progress import alive_bar
 from ultima_scraper_api import auth_types
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MediaModel,
+    MessageModel,
+)
+from ultima_scraper_renamer.reformat import ReformatManager
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -16,11 +22,6 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MediaMetadata,
 )
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MediaModel,
-    MessageModel,
-)
-from ultima_scraper_renamer.reformat import ReformatManager
 
 
 class DownloadManager:
