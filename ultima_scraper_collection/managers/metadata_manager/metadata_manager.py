@@ -498,7 +498,6 @@ class MetadataManager:
                 )
                 new_metadata_filepath.parent.mkdir(parents=True, exist_ok=True)
                 self.filesystem_manager.move(legacy_filepath, new_metadata_filepath)
-        await self.filesystem_manager.format_directories(self.subscription)
         await self.fix_archived_db()
         self.metadatas = self.find_metadatas()
 
@@ -776,9 +775,10 @@ class MetadataManager:
                     archived_database_path.name,
                 )
                 new_filepath.parent.mkdir(exist_ok=True)
-                archived_database_path.rename(new_filepath)
-                filesystem_manager_user.remove_file(archived_database_path)
-                filesystem_manager_user.add_file(new_filepath)
+                filesystem_manager_user.rename_path(
+                    archived_database_path, new_filepath
+                )
+                await filesystem_manager_user.refresh_files()
 
     def export(self, api_type: str, datas: list[dict[str, Any]]):
         if api_type == "Posts":
