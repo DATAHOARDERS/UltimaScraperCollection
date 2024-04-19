@@ -562,4 +562,5 @@ class StreamlinedDatascraper:
         ):
             if performer.is_blocked:
                 await performer.unblock()
+        performer.aliases = [x.username for x in db_performer.aliases]
         return performer
