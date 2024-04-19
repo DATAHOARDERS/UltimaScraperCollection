@@ -1,13 +1,11 @@
 import os
 from pathlib import Path
 from shutil import disk_usage
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ultima_scraper_api import user_types
 
 from ultima_scraper_collection.config import Directory
-
-from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
@@ -117,3 +115,18 @@ def find_unused_filename(filepath: Path):
         counter += 1
 
     return filepath
+
+
+from PIL import Image
+
+
+def is_image_valid(file_path: Path):
+    try:
+        with Image.open(file_path) as img:
+            # Attempt to open the image file
+            img.load()  # This will load the image data
+            return True  # If successful, the image is not corrupted
+    except Exception as e:
+        # An exception occurred, so the image might be corrupted
+        print(f"Error: {e}")
+        return False
