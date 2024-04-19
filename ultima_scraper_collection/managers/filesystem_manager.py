@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Literal
 
@@ -11,9 +11,13 @@ import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
+from ultima_scraper_renamer.reformat import (
+    FormatAttributes,
+    ReformatItem,
+    ReformatManager,
+)
 
 from ultima_scraper_collection.helpers import main_helper as usc_helper
-from ultima_scraper_renamer.reformat import FormatAttributes, ReformatItem
 
 if TYPE_CHECKING:
     api_types = ultima_scraper_api.api_types
@@ -133,106 +137,204 @@ class FilesystemManager:
         f_d_p = reformat_item_fd.remove_non_unique(self.directory_manager, format_key)
         return f_d_p
 
-    async def update_performer_folder_name(
-        self, datascraper: datascraper_types, user: user_types
-    ):
-        for directory in datascraper.site_config.download_setup.directories:
-            assert directory.path
-            for username in user.aliases:
-                f_d_p = await self.create_option(
-                    datascraper, username, directory.path, "file_directory_format"
-                )
-                if f_d_p.exists():
-                    new_folderpath = await self.create_option(
-                        datascraper,
-                        user.username,
-                        directory.path,
-                        "file_directory_format",
-                    )
-                    f_d_p.rename(new_folderpath)
-                    # can merge duplicate folders here
-                    break
-
     async def create_directory_manager(
         self, site_config: site_config_types, user: user_types
     ):
-        api = user.get_api()
         if self.directory_manager:
-            final_download_directory = self.directory_manager.root_download_directory
+            final_download_directory = await self.discover_main_directory(user)
+            final_root_download_directory = (
+                self.directory_manager.root_download_directory
+            )
             for directory in site_config.download_setup.directories:
-                option = {
-                    "site_name": api.site_name,
-                    "profile_username": user.username,
-                    "model_username": user.username,
-                    "directory": directory.path,
-                }
-                reformat_item_fd = ReformatItem(option)
-                f_d_p = reformat_item_fd.remove_non_unique(
-                    self.directory_manager, "file_directory_format"
-                )
-                if f_d_p.exists():
-                    final_download_directory = directory.path
-                    assert final_download_directory
+                assert directory.path
+                if directory.path.as_posix() in final_download_directory.as_posix():
+                    final_root_download_directory = directory.path
                     break
             directory_manager = DirectoryManager(
                 site_config,
                 self.directory_manager.root_metadata_directory,
-                final_download_directory,
+                final_root_download_directory,
             )
-            # option = {
-            #     "site_name": api.site_name,
-            #     "profile_username": user.username,
-            #     "model_username": user.username,
-            #     "directory": directory_manager.root_download_directory,
-            # }
-            # reformat_item_fd = ReformatItem(option)
-            # _f_d_p = reformat_item_fd.remove_non_unique(
-            #     directory_manager, "file_directory_format"
-            # )
-            # # f_d_p.mkdir(parents=True, exist_ok=True)
-            # option["directory"] = self.directory_manager.root_metadata_directory
-            # reformat_item_md = ReformatItem(option)
-            # _f_d_p_2 = reformat_item_md.remove_non_unique(
-            #     self.directory_manager, "metadata_directory_format"
-            # )
-            # # f_d_p_2.mkdir(parents=True, exist_ok=True)
             self.directory_manager_users[user.id] = directory_manager
             self.file_manager_users[user.id] = FileManager(directory_manager)
             return directory_manager
 
-    async def format_directories(self, subscription: user_types) -> DirectoryManager:
+    async def discover_main_metadata_directory(self, subscription: user_types):
+        usernames = subscription.get_usernames(ignore_id=False)
+        valid_usernames = subscription.get_usernames(ignore_id=True)
+        authed = subscription.get_authed()
+        reformat_manager = ReformatManager(authed, self)
+        directory_manager = self.directory_manager
+        site_config = directory_manager.site_config
+        final_store_directory = None
+        for username in usernames:
+            for store_directory in [
+                x.path for x in site_config.metadata_setup.directories if x.path
+            ]:
+                download_directory_reformat_item = (
+                    reformat_manager.prepare_user_reformat(
+                        subscription, store_directory, username=username
+                    )
+                )
+                formatted_download_directory = (
+                    download_directory_reformat_item.reformat(
+                        site_config.metadata_setup.directory_format
+                    )
+                )
+                final_store_directory = formatted_download_directory
+                if final_store_directory.exists():
+                    if username == f"u{subscription.id}":
+                        if valid_usernames:
+                            download_directory_reformat_item = (
+                                reformat_manager.prepare_user_reformat(
+                                    subscription,
+                                    store_directory,
+                                    username=valid_usernames[-1],
+                                )
+                            )
+                            formatted_download_directory = (
+                                download_directory_reformat_item.reformat(
+                                    site_config.metadata_setup.directory_format
+                                )
+                            )
+                            if not formatted_download_directory.exists():
+                                formatted_download_directory.mkdir(
+                                    exist_ok=True, parents=True
+                                )
+                                final_store_directory.rename(
+                                    formatted_download_directory
+                                )
+                                final_store_directory = formatted_download_directory
+                            else:
+                                final_store_directory = formatted_download_directory
+                            return final_store_directory
+                    else:
+                        return final_store_directory
+        return final_store_directory
+
+    async def discover_main_directory(self, subscription: user_types):
+        usernames = subscription.get_usernames(ignore_id=False)
+        valid_usernames = subscription.get_usernames(ignore_id=True)
+        authed = subscription.get_authed()
+        reformat_manager = ReformatManager(authed, self)
+        directory_manager = self.directory_manager
+        assert directory_manager
+        site_config = directory_manager.site_config
+        final_store_directory = None
+        for username in usernames:
+            for store_directory in [
+                x.path for x in site_config.download_setup.directories if x.path
+            ]:
+                download_directory_reformat_item = (
+                    reformat_manager.prepare_user_reformat(
+                        subscription, store_directory, username=username
+                    )
+                )
+                formatted_download_directory = (
+                    download_directory_reformat_item.remove_non_unique(
+                        directory_manager, "file_directory_format"
+                    )
+                )
+                final_store_directory = formatted_download_directory
+                if formatted_download_directory.exists():
+                    if username == f"u{subscription.id}":
+                        if valid_usernames:
+                            download_directory_reformat_item = (
+                                reformat_manager.prepare_user_reformat(
+                                    subscription,
+                                    store_directory,
+                                    username=valid_usernames[-1],
+                                )
+                            )
+                            formatted_download_directory = (
+                                download_directory_reformat_item.remove_non_unique(
+                                    directory_manager, "file_directory_format"
+                                )
+                            )
+                            if not formatted_download_directory.exists():
+                                final_store_directory.rename(
+                                    formatted_download_directory
+                                )
+                                final_store_directory = formatted_download_directory
+                            else:
+                                final_store_directory = formatted_download_directory
+                            return final_store_directory
+                    else:
+                        return final_store_directory
+        assert final_store_directory
+        breakpoint()
+        return final_store_directory
+
+    async def discover_alternative_directories(self, subscription: user_types):
+        usernames = subscription.get_usernames(ignore_id=False)
+        authed = subscription.get_authed()
+        reformat_manager = ReformatManager(authed, self)
         directory_manager = self.get_directory_manager(subscription.id)
         site_config = directory_manager.site_config
-        file_manager = self.get_file_manager(subscription.id)
-        authed = subscription.get_authed()
-        api = authed.api
-        authed_username = authed.username
-        subscription_username = subscription.username
-        site_name = authed.api.site_name
-        reformat_item = ReformatItem()
-        reformat_item.site_name = site_name
-        reformat_item.profile_username = authed_username
-        reformat_item.model_username = subscription_username
-        reformat_item.date = datetime.today()
-        download_setup = site_config.download_setup
-        reformat_item.date_format = download_setup.date_format
-        reformat_item.text_length = download_setup.text_length
-        reformat_item.directory = directory_manager.root_metadata_directory
-        metadata_setup = site_config.metadata_setup
-        string = reformat_item.reformat(metadata_setup.directory_format)
-        directory_manager.user.metadata_directory = Path(string)
-        reformat_item_2 = copy.copy(reformat_item)
-        reformat_item_2.directory = directory_manager.root_download_directory
-        string = reformat_item_2.reformat(metadata_setup.directory_format)
-        formtatted_root_download_directory = reformat_item_2.remove_non_unique(
-            directory_manager, "file_directory_format"
+        for username in usernames:
+            for alt_download_directory in [
+                x.path for x in site_config.download_setup.directories if x.path
+            ]:
+                alt_download_directory_reformat_item = (
+                    reformat_manager.prepare_user_reformat(
+                        subscription, alt_download_directory, username=username
+                    )
+                )
+                formatted_alt_download_directory = (
+                    alt_download_directory_reformat_item.remove_non_unique(
+                        directory_manager, "file_directory_format"
+                    )
+                )
+                if (
+                    formatted_alt_download_directory
+                    == directory_manager.user.download_directory
+                ):
+                    continue
+                if formatted_alt_download_directory.exists():
+                    directory_manager.user.alt_download_directories.append(
+                        formatted_alt_download_directory
+                    )
+        return directory_manager.user.alt_download_directories
+
+    async def format_directories(self, performer: user_types) -> DirectoryManager:
+        authed = performer.get_authed()
+        directory_manager = self.get_directory_manager(performer.id)
+        file_manager = self.get_file_manager(performer.id)
+
+        final_metadata_directory = await self.discover_main_metadata_directory(
+            performer
         )
-        directory_manager.user.download_directory = formtatted_root_download_directory
-        await file_manager.set_default_files(reformat_item, reformat_item_2)
+        directory_manager.user.metadata_directory = final_metadata_directory
+
+        final_download_directory = await self.discover_main_directory(performer)
+        directory_manager.user.download_directory = final_download_directory
+
+        api = authed.api
+        performer_username = performer.get_usernames(ignore_id=True)[-1]
+        site_name = authed.api.site_name
+        alt_directories = await self.discover_alternative_directories(performer)
+        await file_manager.set_default_files()
         _metadata_filepaths = await file_manager.find_metadata_files(legacy_files=False)
-        # I forgot why we need to set default file twice
-        await file_manager.set_default_files(reformat_item, reformat_item_2)
+        # for metadata_filepath in metadata_filepaths:
+        #     if file_manager.directory_manager.user.metadata_directory.as_posix() in metadata_filepath.parent.as_posix():
+        #         continue
+        #     new_filepath = file_manager.directory_manager.user.metadata_directory.joinpath(metadata_filepath.name)
+        #     if new_filepath.exists():
+        #         new_filepath = usc_helper.find_unused_filename(
+        #             new_filepath
+        #         )
+        #         if new_filepath.exists():
+        #             breakpoint()
+        #     file_manager.rename_path(metadata_filepath, new_filepath)
+        #     pass
+        # alt_files = await usc_helper.walk(
+        #     file_manager.directory_manager.user.download_directory
+        # )
+        # if not alt_files:
+        #     shutil.rmtree(file_manager.directory_manager.user.download_directory)
+        await file_manager.merge_alternative_directories(alt_directories)
         user_metadata_directory = directory_manager.user.metadata_directory
+        assert user_metadata_directory
         _user_download_directory = directory_manager.user.download_directory
         legacy_metadata_directory = user_metadata_directory
         directory_manager.user.legacy_metadata_directories.append(
@@ -245,7 +347,7 @@ class FilesystemManager:
                 legacy_metadata_directory_2
             )
         legacy_model_directory = directory_manager.root_download_directory.joinpath(
-            site_name, subscription_username
+            site_name, performer_username
         )
         directory_manager.user.legacy_download_directories.append(
             legacy_model_directory
@@ -257,8 +359,8 @@ class DirectoryManager:
     def __init__(
         self,
         site_config: site_config_types,
-        root_metadata_directory: Path = Path(),
-        root_download_directory: Path = Path(),
+        root_metadata_directory: Path,
+        root_download_directory: Path,
     ) -> None:
         self.root_directory = Path()
         self.root_metadata_directory = Path(root_metadata_directory)
@@ -305,8 +407,9 @@ class DirectoryManager:
 
     class UserDirectories:
         def __init__(self) -> None:
-            self.metadata_directory = Path()
-            self.download_directory = Path()
+            self.metadata_directory: Path | None = None
+            self.download_directory: Path | None = None
+            self.alt_download_directories: list[Path] = []
             self.legacy_download_directories: list[Path] = []
             self.legacy_metadata_directories: list[Path] = []
 
@@ -338,26 +441,18 @@ class FileManager:
 
     async def set_default_files(
         self,
-        prepared_metadata_format: ReformatItem,
-        prepared_download_format: ReformatItem,
     ):
-        self.files = []
-        await self.update_files(prepared_metadata_format, "metadata_directory_format")
-        await self.update_files(prepared_download_format, "file_directory_format")
+        assert self.directory_manager.user.metadata_directory
+        assert self.directory_manager.user.download_directory
+        await self.update_files(self.directory_manager.user.metadata_directory)
+        await self.update_files(self.directory_manager.user.download_directory)
 
     async def refresh_files(self):
-        self.files = await self.directory_manager.walk(
-            self.directory_manager.user.download_directory
-        )
-        return self.files
+        return await self.set_default_files()
 
-    async def update_files(self, reformatter: ReformatItem, format_key: str):
+    async def update_files(self, directory: Path):
         directory_manager = self.directory_manager
-        formatted_directory = reformatter.remove_non_unique(
-            directory_manager, format_key
-        )
-        files: list[Path] = []
-        files = await directory_manager.walk(formatted_directory)
+        files = await directory_manager.walk(directory)
         self.files.extend(files)
         return files
 
@@ -366,7 +461,16 @@ class FileManager:
         return True
 
     def remove_file(self, filepath: Path):
-        self.files.remove(filepath)
+        if filepath in self.files:
+            self.files.remove(filepath)
+            return True
+        return False
+
+    def rename_path(self, old_filepath: Path, new_filepath: Path):
+        self.remove_file(old_filepath)
+        self.add_file(new_filepath)
+        new_filepath.parent.mkdir(exist_ok=True, parents=True)
+        shutil.move(old_filepath, new_filepath)
         return True
 
     def delete_path(self, filepath: Path):
@@ -412,6 +516,48 @@ class FileManager:
                 case _:
                     pass
         return new_list
+
+    async def merge_alternative_directories(self, alt_directories: list[Path]):
+        directory_manager = self.directory_manager
+        assert directory_manager.user.download_directory
+        for alt_download_directory in alt_directories:
+            alt_files = await directory_manager.walk(alt_download_directory)
+            for alt_file in alt_files:
+                new_filepath = Path(
+                    alt_file.as_posix().replace(
+                        alt_download_directory.as_posix(),
+                        directory_manager.user.download_directory.as_posix(),
+                    )
+                )
+
+                if alt_file.suffix in [".json", ".db"]:
+                    if new_filepath.exists():
+                        new_filepath = usc_helper.find_unused_filename(new_filepath)
+                        if new_filepath.exists():
+                            breakpoint()
+                if new_filepath.exists():
+                    old_checksum = hashlib.md5(alt_file.read_bytes()).hexdigest()
+                    new_checksum = hashlib.md5(new_filepath.read_bytes()).hexdigest()
+                    if old_checksum == new_checksum:
+                        self.delete_path(alt_file)
+                    else:
+                        old_size = alt_file.stat().st_size
+                        new_size = new_filepath.stat().st_size
+                        if old_size > new_size:
+                            self.rename_path(alt_file, new_filepath)
+                        elif new_size > old_size:
+                            self.delete_path(alt_file)
+                        elif old_size == new_size:
+                            if usc_helper.is_image_valid(new_filepath):
+                                self.delete_path(alt_file)
+                            elif usc_helper.is_image_valid(alt_file):
+                                self.rename_path(alt_file, new_filepath)
+                else:
+                    self.rename_path(alt_file, new_filepath)
+
+            alt_files = await usc_helper.walk(alt_download_directory)
+            if not alt_files:
+                shutil.rmtree(alt_download_directory)
 
 
 class FormatTypes:
