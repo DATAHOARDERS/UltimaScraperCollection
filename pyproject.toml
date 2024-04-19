@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "2.2.1"
+version = "2.2.11"
 description = ""
 authors = ["UltimaHoarder <1285176+UltimaHoarder@users.noreply.github.com>"]
 packages = [{ include = "ultima_scraper_collection" }]
@@ -19,7 +19,7 @@ ffmpeg-python = "^0.2.0"
 pydantic = "^1.10.9"
 netifaces = "^0.11.0"
 sshtunnel = "^0.4.0"
-fastapi = "^0.104.1"
+fastapi = "^0.100"
 ultima-scraper-detector = "^0.1.0"
 inflection = "^0.5.1"
 alive-progress = "^3.1.5"
