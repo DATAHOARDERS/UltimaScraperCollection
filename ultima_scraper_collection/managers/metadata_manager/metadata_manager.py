@@ -10,15 +10,6 @@ from sqlalchemy import inspect
 from ultima_scraper_api.apis.onlyfans import preview_url_picker, url_picker
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_collection.managers.content_manager import ContentManager
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
-    DBCollection,
-    SqliteDatabase,
-)
-from ultima_scraper_collection.managers.database_manager.database_manager import (
-    DatabaseManager,
-)
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MediaModel as DBMediaModel,
 )
@@ -31,6 +22,17 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     StoryModel as DBStoryModel,
 )
+from ultima_scraper_db.databases.ultima_archive.site_api import content_model_types
+
+from ultima_scraper_collection.managers.content_manager import ContentManager
+from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
+    DBCollection,
+    SqliteDatabase,
+)
+from ultima_scraper_collection.managers.database_manager.database_manager import (
+    DatabaseManager,
+)
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
@@ -284,7 +286,7 @@ class ContentMetadata:
         self.is_from_queue: bool = False
         self.__raw__: Any | None = None
         self.__soft__: Any = None
-        self.__db_content__: DBStoryModel | DBPostModel | DBMessageModel | None = None
+        self.__db_content__: content_model_types | None = None
         self.__legacy__ = False
         self.content_manager = content_manager
 
@@ -348,6 +350,8 @@ class MediaMetadata:
         drm: bool = False,
     ) -> None:
         self.id = int(media_id) if media_id is not None else None
+        if content_metadata:
+            self.user_id = content_metadata.user_id
         self.media_type = media_type
         self.urls: list[str] = urls
         self.preview = preview
@@ -516,9 +520,9 @@ class MetadataManager:
                 continue
             final_content_type = None
             archive = False
-            new_metadata_set: list[dict[str, Any]] | dict[
-                str, Any
-            ] = main_helper.import_json(metadata_filepath)
+            new_metadata_set: list[dict[str, Any]] | dict[str, Any] = (
+                main_helper.import_json(metadata_filepath)
+            )
             content_types = self.subscription.get_api().CategorizedContent().get_keys()
             final_stem = metadata_filepath.stem
             patterns = []
