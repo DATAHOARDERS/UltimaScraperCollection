@@ -10,6 +10,15 @@ from sqlalchemy import inspect
 from ultima_scraper_api.apis.onlyfans import preview_url_picker, url_picker
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
+from ultima_scraper_collection.managers.content_manager import ContentManager
+from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
+    DBCollection,
+    SqliteDatabase,
+)
+from ultima_scraper_collection.managers.database_manager.database_manager import (
+    DatabaseManager,
+)
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MediaModel as DBMediaModel,
 )
@@ -23,16 +32,6 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     StoryModel as DBStoryModel,
 )
 from ultima_scraper_db.databases.ultima_archive.site_api import content_model_types
-
-from ultima_scraper_collection.managers.content_manager import ContentManager
-from ultima_scraper_collection.managers.database_manager.connections.sqlite.sqlite_database import (
-    DBCollection,
-    SqliteDatabase,
-)
-from ultima_scraper_collection.managers.database_manager.database_manager import (
-    DatabaseManager,
-)
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
@@ -519,6 +518,9 @@ class MetadataManager:
                 continue
             final_content_type = None
             archive = False
+            if metadata_filepath.stat().st_size == 0:
+                metadata_filepath.unlink()
+                continue
             new_metadata_set: list[dict[str, Any]] | dict[str, Any] = (
                 main_helper.import_json(metadata_filepath)
             )
@@ -545,6 +547,8 @@ class MetadataManager:
                 if final_stem == "Archived" or "Archived" in metadata_filepath.parts:
                     archive = True
                     final_content_type = "Posts"
+                if "Posts" in final_stem:
+                    final_content_type = "Posts"
                 if not final_content_type:
                     # If we get an key error here, we need to move the json file to correct folder or we can resolve it by getting content_type by looking at the directory path
                     # directory_set = set()
@@ -570,7 +574,12 @@ class MetadataManager:
                                 for item in new_metadata_set["valid"]
                             ):
                                 final_content_type = temp_content_type
+                                if not final_content_type:
+                                    if metadata_filepath.parent.stem == "Metadata":
+                                        continue
                         else:
+                            if "content_type" not in new_metadata_set:
+                                continue
                             final_content_type = new_metadata_set["content_type"]
             assert (
                 final_content_type
@@ -582,7 +591,7 @@ class MetadataManager:
                 for temp_set in new_metadata_set:
                     content_json[temp_set["type"]] = {
                         "valid": temp_set["valid"],
-                        "invalid": temp_set["invalid"],
+                        "invalid": temp_set.get("invalid", []),
                     }
                 final_metadata_set["version"] = 1.8
                 final_metadata_set["content"] = content_json

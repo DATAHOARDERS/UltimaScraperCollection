@@ -11,13 +11,12 @@ import ultima_scraper_api
 from aiohttp.client_reqrep import ClientResponse
 from ultima_scraper_api.helpers.main_helper import open_partial
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
+from ultima_scraper_collection.helpers import main_helper as usc_helper
 from ultima_scraper_renamer.reformat import (
     FormatAttributes,
     ReformatItem,
     ReformatManager,
 )
-
-from ultima_scraper_collection.helpers import main_helper as usc_helper
 
 if TYPE_CHECKING:
     api_types = ultima_scraper_api.api_types
