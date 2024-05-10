@@ -98,12 +98,12 @@ class GlobalAPI(USAGlobalAPI):
     auto_performer_choice: auto_types = None
     auto_content_choice: auto_types = None
     auto_media_choice: auto_types = None
-    jobs = Jobs()
-    metadata_setup = GlobalXPathSetup()
+    jobs: Jobs = Jobs()
+    metadata_setup: GlobalXPathSetup = GlobalXPathSetup()
     metadata_setup.directory_format = (
         "{site_name}/{first_letter}/{model_username}/Metadata"
     )  # type: ignore
-    download_setup = DownloadPathSetup()
+    download_setup: DownloadPathSetup = DownloadPathSetup()
     download_setup.directory_format = (
         "{site_name}/{first_letter}/{model_username}/{api_type}/{value}/{media_type}"
     )  # type: ignore
@@ -130,7 +130,7 @@ class UltimaScraperCollectionConfig(UltimaScraperAPIConfig):
         auto_site_choice: str = ""
         databases: list[Database] = [Database()]
         tools: Tools = Tools()
-        trash = Trash()
+        trash: Trash = Trash()
         infinite_loop: bool = False
         exit_on_completion: bool = True
 

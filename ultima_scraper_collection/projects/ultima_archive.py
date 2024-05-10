@@ -15,6 +15,6 @@ class UltimaArchiveProject(Project):
             db_info, Alembica(generate=False, migrate=False), merged_metadata
         )
         self.ultima_archive_db_api = await ArchiveAPI(ultima_archive_db).init()
-        self.fast_api = UAClient()
+        self.fast_api = UAClient(self.ultima_archive_db_api)
         UAClient.database_api = self.ultima_archive_db_api
         return self
