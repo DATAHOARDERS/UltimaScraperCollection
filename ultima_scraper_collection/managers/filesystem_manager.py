@@ -219,11 +219,12 @@ class FilesystemManager:
         directory_manager = self.directory_manager
         assert directory_manager
         site_config = directory_manager.site_config
-        final_store_directory = None
+        store_directories = [
+            x.path for x in site_config.download_setup.directories if x.path
+        ]
+
         for username in usernames:
-            for store_directory in [
-                x.path for x in site_config.download_setup.directories if x.path
-            ]:
+            for store_directory in store_directories:
                 download_directory_reformat_item = (
                     reformat_manager.prepare_user_reformat(
                         subscription, store_directory, username=username
@@ -234,35 +235,37 @@ class FilesystemManager:
                         directory_manager, "file_directory_format"
                     )
                 )
-                final_store_directory = formatted_download_directory
+
                 if formatted_download_directory.exists():
-                    if username == f"u{subscription.id}":
-                        if valid_usernames:
-                            download_directory_reformat_item = (
-                                reformat_manager.prepare_user_reformat(
-                                    subscription,
-                                    store_directory,
-                                    username=valid_usernames[-1],
-                                )
+                    if username == f"u{subscription.id}" and valid_usernames:
+                        download_directory_reformat_item = (
+                            reformat_manager.prepare_user_reformat(
+                                subscription,
+                                store_directory,
+                                username=valid_usernames[-1],
                             )
-                            formatted_download_directory = (
-                                download_directory_reformat_item.remove_non_unique(
-                                    directory_manager, "file_directory_format"
-                                )
+                        )
+                        formatted_download_directory = (
+                            download_directory_reformat_item.remove_non_unique(
+                                directory_manager, "file_directory_format"
                             )
-                            if not formatted_download_directory.exists():
-                                final_store_directory.rename(
-                                    formatted_download_directory
-                                )
-                                final_store_directory = formatted_download_directory
-                            else:
-                                final_store_directory = formatted_download_directory
-                            return final_store_directory
-                    else:
-                        return final_store_directory
-        assert final_store_directory
-        breakpoint()
-        return final_store_directory
+                        )
+                        if not formatted_download_directory.exists():
+                            formatted_download_directory.rename(
+                                formatted_download_directory
+                            )
+                        return formatted_download_directory
+                    return formatted_download_directory
+
+        download_directory_reformat_item = reformat_manager.prepare_user_reformat(
+            subscription, directory_manager.root_download_directory, username=username
+        )
+        formatted_download_directory = (
+            download_directory_reformat_item.remove_non_unique(
+                directory_manager, "file_directory_format"
+            )
+        )
+        return formatted_download_directory
 
     async def discover_alternative_directories(self, subscription: user_types):
         usernames = subscription.get_usernames(ignore_id=False)

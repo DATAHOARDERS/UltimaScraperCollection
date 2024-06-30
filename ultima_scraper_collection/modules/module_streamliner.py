@@ -12,6 +12,18 @@ from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     create_user as OnlyFansUserModel,
 )
 from ultima_scraper_api.helpers.main_helper import ProgressBar
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -26,19 +38,6 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     UserModel as DBUserModel,
 )
 from ultima_scraper_renamer.reformat import ReformatManager
-
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -157,7 +156,7 @@ class StreamlinedDatascraper:
         available_jobs = site_config.jobs.scrape
         option_manager = self.datascraper.option_manager
         performer_options = option_manager.performer_options
-        assert option_manager.subscription_options
+        assert option_manager.subscription_options, "Subscription options not found"
         valid_user_list: set[user_types] = set(
             option_manager.subscription_options.final_choices
         )
@@ -234,7 +233,7 @@ class StreamlinedDatascraper:
         if isinstance(authed, OnlyFansAuthModel) and user.is_authed_user():
             vault = await authed.get_vault_lists()
             vault_item = vault.resolve(name=content_type)
-            assert vault_item
+            assert vault_item, f"Vault item {content_type} not found"
             vault_item_medias = await vault_item.get_medias()
             media_metadatas: list[MediaMetadata] = []
             for vault_item_media in vault_item_medias:
@@ -276,7 +275,7 @@ class StreamlinedDatascraper:
     async def paid_content_scraper(self, authed: auth_types):
         paid_contents = await authed.get_paid_content()
         datascraper = self.datascraper
-        assert datascraper
+        assert datascraper, "Datascraper not found"
         unique_suppliers: set[user_types] = set()
         for paid_content in paid_contents:
             supplier = paid_content.get_author()

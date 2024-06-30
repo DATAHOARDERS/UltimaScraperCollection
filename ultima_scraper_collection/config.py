@@ -100,14 +100,14 @@ class GlobalAPI(USAGlobalAPI):
     auto_media_choice: auto_types = None
     jobs: Jobs = Jobs()
     metadata_setup: GlobalXPathSetup = GlobalXPathSetup()
-    metadata_setup.directory_format = (
+    metadata_setup.directory_format: Path = Path(
         "{site_name}/{first_letter}/{model_username}/Metadata"
-    )  # type: ignore
+    )
     download_setup: DownloadPathSetup = DownloadPathSetup()
-    download_setup.directory_format = (
+    download_setup.directory_format: Path = Path(
         "{site_name}/{first_letter}/{model_username}/{api_type}/{value}/{media_type}"
-    )  # type: ignore
-    download_setup.filename_format = "{filename}.{ext}"  # type: ignore
+    )
+    download_setup.filename_format: Path = Path("{filename}.{ext}")
     blacklists: list[str] = []
 
 

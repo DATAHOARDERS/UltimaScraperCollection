@@ -17,4 +17,5 @@ class UltimaArchiveProject(Project):
         self.ultima_archive_db_api = await ArchiveAPI(ultima_archive_db).init()
         self.fast_api = UAClient(self.ultima_archive_db_api)
         UAClient.database_api = self.ultima_archive_db_api
+        UAClient.config = config
         return self
