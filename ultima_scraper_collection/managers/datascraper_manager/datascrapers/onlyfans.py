@@ -69,6 +69,8 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         await content_metadata.resolve_extractor(ApiExtractor(content_result))
         for asset in content_metadata.medias:
             if asset.urls:
+                if asset.__content_metadata__.__soft__.get_author().id == authed.id:
+                    continue
                 reformat_manager = ReformatManager(authed, self.filesystem_manager)
                 reformat_item = reformat_manager.prepare_reformat(asset)
                 if reformat_item.api_type == "Messages":
