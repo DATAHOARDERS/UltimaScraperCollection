@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "2.3.14"
+version = "2.3.15"
 description = ""
 authors = ["UltimaHoarder <1285176+UltimaHoarder@users.noreply.github.com>"]
 packages = [{ include = "ultima_scraper_collection" }]
@@ -19,6 +19,7 @@ inflection = "^0.5.1"
 alive-progress = "^3.1.5"
 aio-pika = "^9.4.1"
 ujson = "^5.10.0"
+platformdirs = "^4.2.2"
 
 ultima-scraper-api = "^2.0"
 ultima-scraper-renamer = "^1.0"
