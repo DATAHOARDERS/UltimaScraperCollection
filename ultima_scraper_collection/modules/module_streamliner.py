@@ -230,7 +230,11 @@ class StreamlinedDatascraper:
             return
         authed: auth_types = user.get_authed()
         site_config = self.datascraper.site_config
-        if isinstance(authed, OnlyFansAuthModel) and user.is_authed_user():
+        if (
+            isinstance(authed, OnlyFansAuthModel)
+            and user.is_authed_user()
+            and user.is_performer()
+        ):
             vault = await authed.get_vault_lists()
             vault_item = vault.resolve(name=content_type)
             assert vault_item, f"Vault item {content_type} not found"

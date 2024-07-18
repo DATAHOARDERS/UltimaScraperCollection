@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 from ultima_scraper_api import user_types
 
-from ultima_scraper_collection.config import Directory
+from ultima_scraper_collection.config import Directory, UltimaScraperCollectionConfig
+import ujson
 
 if TYPE_CHECKING:
     from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
@@ -130,3 +131,8 @@ def is_image_valid(file_path: Path):
         # An exception occurred, so the image might be corrupted
         print(f"Error: {e}")
         return False
+
+
+def load_config(config_path: Path):
+    config_json = ujson.loads(config_path.read_text())
+    return UltimaScraperCollectionConfig(**config_json)

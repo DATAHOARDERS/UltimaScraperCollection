@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import ujson
+from platformdirs import user_config_dir
 from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
 from ultima_scraper_api.config import FanslyAPIConfig
 from ultima_scraper_api.config import GlobalAPI as USAGlobalAPI
@@ -139,6 +141,13 @@ class UltimaScraperCollectionConfig(UltimaScraperAPIConfig):
 
     settings: Settings = Settings()
     site_apis: Sites = Sites()
+
+    def load_default_config(self):
+        config_dir = user_config_dir("ultima_scraper_verse")  # type: ignore
+        config_path = Path(config_dir) / "config.json"  # type: ignore
+
+        config_json = ujson.loads(config_path.read_text())
+        return UltimaScraperCollectionConfig(**config_json)
 
     def get_site_config(self, site_name: str):
         return getattr(self.site_apis, site_name.lower())

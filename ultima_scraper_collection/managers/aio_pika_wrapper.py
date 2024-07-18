@@ -18,11 +18,12 @@ class AioPikaWrapper:
         assert self.channel is not None
         return self.channel
 
-    async def connect(self):
+    async def connect(self, prefetch_count: int = 0):
         if self.connection is not None:
             return
         self.connection = await aio_pika.connect_robust(self.amqp_url)
         self.channel = await self.connection.channel()
+        await self.channel.set_qos(prefetch_count=prefetch_count)
 
     async def declare_queue(self, queue_name: str, durable: bool = True):
         if self.channel is None:

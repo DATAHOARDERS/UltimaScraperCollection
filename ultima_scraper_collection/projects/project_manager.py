@@ -47,7 +47,14 @@ class Project:
         alembica: Alembica,
         metadata: MetaData = MetaData(),
         echo: bool = False,
+        upgrade: bool = False,
     ):
+        if upgrade:
+            alembica.is_generate = True
+            alembica.is_migrate = True
+        else:
+            alembica.is_generate = False
+            alembica.is_migrate = False
         db_info = self.handle_ssh(db_info)
         temp_database = self.db_manager.create_database(
             **db_info, metadata=metadata, alembica=alembica

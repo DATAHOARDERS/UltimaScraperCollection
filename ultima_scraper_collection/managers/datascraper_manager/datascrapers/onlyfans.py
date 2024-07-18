@@ -7,9 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.apis.onlyfans.onlyfans import OnlyFansAPI
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import PostModel
-from ultima_scraper_renamer.reformat import ReformatManager
-
 from ultima_scraper_collection.config import Sites
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     ApiExtractor,
@@ -18,6 +15,8 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import PostModel
+from ultima_scraper_renamer.reformat import ReformatManager
 
 if TYPE_CHECKING:
     from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
@@ -153,7 +152,6 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
                 for x in performer.scrape_manager.scraped.Posts.values()
                 if x.created_at > threshold_date
             ]
-
             await asyncio.gather(*tasks)
             return posts + archived_posts + private_archived_posts
 
