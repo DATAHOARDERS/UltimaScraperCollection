@@ -245,6 +245,17 @@ test = ["anyio[trio]", "coverage[toml] (>=7)", "exceptiongroup (>=1.2.0)", "hypo
 trio = ["trio (>=0.23)"]
 
 [[package]]
+name = "appdirs"
+version = "1.4.4"
+description = "A small Python module for determining appropriate platform-specific dirs, e.g. a \"user data dir\"."
+optional = false
+python-versions = "*"
+files = [
+    {file = "appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128"},
+    {file = "appdirs-1.4.4.tar.gz", hash = "sha256:7d5d0167b2b1ba821647616af46a749d1c653740dd0d2415100fe26e27afdf41"},
+]
+
+[[package]]
 name = "async-timeout"
 version = "4.0.3"
 description = "Timeout context manager for asyncio programs"
@@ -3253,13 +3264,13 @@ full = ["httpx (>=0.22.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.7
 
 [[package]]
 name = "sympy"
-version = "1.13.0"
+version = "1.13.1"
 description = "Computer algebra system (CAS) in Python"
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "sympy-1.13.0-py3-none-any.whl", hash = "sha256:6b0b32a4673fb91bd3cac3b55406c8e01d53ae22780be467301cc452f6680c92"},
-    {file = "sympy-1.13.0.tar.gz", hash = "sha256:3b6af8f4d008b9a1a6a4268b335b984b23835f26d1d60b0526ebc71d48a25f57"},
+    {file = "sympy-1.13.1-py3-none-any.whl", hash = "sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8"},
+    {file = "sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f"},
 ]
 
 [package.dependencies]
@@ -3493,13 +3504,13 @@ xmltodict = ">=0.13.0,<0.14.0"
 
 [[package]]
 name = "ultima-scraper-db"
-version = "0.3.7"
+version = "0.3.71"
 description = ""
 optional = false
 python-versions = "<4,>=3.10"
 files = [
-    {file = "ultima_scraper_db-0.3.7-py3-none-any.whl", hash = "sha256:e48fbcc55b333d3e835b34ffc1832ede47947492b4be9578059252825b035e92"},
-    {file = "ultima_scraper_db-0.3.7.tar.gz", hash = "sha256:17367203ec21997be5ecb8ed96d280b113e94ab65c0ebbecbca86dccfc2fd1b9"},
+    {file = "ultima_scraper_db-0.3.71-py3-none-any.whl", hash = "sha256:1dd0d4f824105d1c17842c440bdf24896c4d6195f1812e63e0725baf4b1057b2"},
+    {file = "ultima_scraper_db-0.3.71.tar.gz", hash = "sha256:e323580afb1fe229b19687b275ff4242f2cc166a7664950ad4c19b88d85e7572"},
 ]
 
 [package.dependencies]
@@ -3508,6 +3519,7 @@ asyncpg = ">=0.29.0,<0.30.0"
 fastapi = ">=0.100.0,<1.0.0"
 fastapi-pagination = ">=0.12.6,<0.13.0"
 inflection = ">=0.5.1,<0.6.0"
+platformdirs = ">=4.2.2,<5.0.0"
 psycopg = ">=3.1.9,<4.0.0"
 slowapi = ">=0.1.9,<0.2.0"
 sqlalchemy = {version = ">=2.0.16,<3.0.0", extras = ["asyncio"]}
@@ -4070,4 +4082,4 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<4"
-content-hash = "5e44d17b3bec9cf74fa9815c71d2634d422c25503e167b733e657fbb7e930a9e"
+content-hash = "534be664df37aa826380dbe802942ed7eb07b85a32c29690136c8972705fccef"
