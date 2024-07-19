@@ -5,8 +5,8 @@ import ujson
 
 
 class AioPikaWrapper:
-    def __init__(self, amqp_url: str = "amqp://localhost/"):
-        self.amqp_url = amqp_url
+    def __init__(self, host: str = "localhost"):
+        self.amqp_url = f"amqp://{host}/"
         self.connection = None
         self.channel = None
 

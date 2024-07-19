@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import ujson
-from platformdirs import user_config_dir
+from appdirs import user_config_dir
 from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
 from ultima_scraper_api.config import FanslyAPIConfig
 from ultima_scraper_api.config import GlobalAPI as USAGlobalAPI
