@@ -4,6 +4,34 @@ import aio_pika
 import ujson
 
 
+def create_notification(
+    category: str,
+    site_name: str,
+    item: Any,
+):
+    json_message = {
+        "site_name": site_name,
+        "category": category,
+        "performer_id": item.id,
+        "username": item.username,
+    }
+    message = {"id": item.id, "data": json_message}
+    return message
+
+
+def create_message(
+    site_name: str, item: Any, mandatory_jobs: dict[str, dict[str, list[str]]]
+):
+    json_message = {
+        "site_name": site_name,
+        "performer_id": item.id,
+        "username": item.username,
+        "mandatory_jobs": mandatory_jobs,
+    }
+    message = {"id": item.id, "data": json_message}
+    return message
+
+
 class AioPikaWrapper:
     def __init__(self, host: str = "localhost"):
         self.amqp_url = f"amqp://{host}/"
@@ -68,6 +96,10 @@ class AioPikaWrapper:
         except aio_pika.exceptions.DeliveryError as e:
             print(f"Error publishing message: {e}")
             return False
+
+    async def publish_notification(self, message: dict[str, Any]):
+        await self.publish_message("telegram_notifications", message)
+        await self.publish_message("discord_notifications", message)
 
     async def close(self):
         if self.connection:

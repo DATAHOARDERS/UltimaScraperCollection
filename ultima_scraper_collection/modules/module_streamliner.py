@@ -112,6 +112,7 @@ async def find_earliest_non_downloaded_message(
                 earliest_non_downloaded_message = db_message
     if found_media:
         earliest_non_downloaded_message = db_messages[0]
+    await site_api.schema.session.commit()
     return earliest_non_downloaded_message
 
 

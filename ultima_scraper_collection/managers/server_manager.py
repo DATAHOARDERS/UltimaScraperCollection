@@ -41,48 +41,51 @@ class ServerManager:
                     return if_mac  # type: ignore
             return None
 
-        self.management_db = database.schemas["management"]
-        db_sites = await self.management_db.session.scalars(select(SiteModel))
-        db_sites = db_sites.all()
-        self.reset = False
-        if not db_sites:
-            # Need to add a create or update for additional sites
-            from ultima_scraper_db.databases.ultima_archive.schemas.management import (
-                default_sites,
-            )
-
-            for site in default_sites:
-                self.management_db.session.add(site)
-            await self.management_db.session.commit()
-            db_sites = await self.management_db.session.scalars(select(SiteModel))
+        async with self.ultima_archive_db_api.create_management_api() as management_api:
+            session = management_api.get_session()
+            db_sites = await session.scalars(select(SiteModel))
             db_sites = db_sites.all()
-            self.reset = True
-        private_ip = get_local_ip()
-        mac_address = mac_for_ip(private_ip)
-        # public_ip = requests.get("https://checkip.amazonaws.com/").text.strip()
-        self.db_sites: Sequence[SiteModel] = db_sites
-        self.ip_address = private_ip
+            self.reset = False
+            if not db_sites:
+                # Need to add a create or update for additional sites
+                from ultima_scraper_db.databases.ultima_archive.schemas.management import (
+                    default_sites,
+                )
 
-        db_servers = await self.management_db.session.scalars(select(ServerModel))
-        db_servers = db_servers.all()
-        if not db_servers:
-            default_server = ServerModel(
-                name="home", ip=self.ip_address, mac_address=mac_address
+                for site in default_sites:
+                    session.add(site)
+                await session.commit()
+                db_sites = await session.scalars(select(SiteModel))
+                db_sites = db_sites.all()
+                self.reset = True
+            private_ip = get_local_ip()
+            mac_address = mac_for_ip(private_ip)
+            # public_ip = requests.get("https://checkip.amazonaws.com/").text.strip()
+            self.db_sites: Sequence[SiteModel] = db_sites
+            self.ip_address = private_ip
+
+            db_servers = await session.scalars(select(ServerModel))
+            db_servers = db_servers.all()
+            if not db_servers:
+                default_server = ServerModel(
+                    name="home", ip=self.ip_address, mac_address=mac_address
+                )
+                session.add(default_server)
+                await session.commit()
+            active_server = await session.scalars(
+                select(ServerModel).where(
+                    (ServerModel.ip == self.ip_address)
+                    & (ServerModel.mac_address == mac_address)
+                )
             )
-            self.management_db.session.add(default_server)
-            await self.management_db.session.commit()
-        active_server = await self.management_db.session.scalars(
-            select(ServerModel).where(
-                (ServerModel.ip == self.ip_address)
-                & (ServerModel.mac_address == mac_address)
-            )
-        )
-        self.active_server = active_server.one()
-        self.site_schemas: dict[str, Schema] = {}
-        for db_site in self.db_sites:
-            site_schema_api = self.ultima_archive_db_api.get_site_api(db_site.db_name)
-            self.site_schemas[site_schema_api.schema.name] = site_schema_api.schema
-        return self
+            self.active_server = active_server.one()
+            self.site_schemas: dict[str, Schema] = {}
+            for db_site in self.db_sites:
+                site_schema_api = self.ultima_archive_db_api.get_site_api(
+                    db_site.db_name
+                )
+                self.site_schemas[site_schema_api.schema.name] = site_schema_api.schema
+            return self
 
     async def resolve_site_schema(self, value: str):
         return self.site_schemas[value]
