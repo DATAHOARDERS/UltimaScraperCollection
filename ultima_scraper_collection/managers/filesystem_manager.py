@@ -213,6 +213,8 @@ class FilesystemManager:
 
     async def discover_main_directory(self, subscription: user_types):
         usernames = subscription.get_usernames(ignore_id=False)
+        if f"u{subscription.id}" not in usernames:
+            usernames.append(f"u{subscription.id}")
         valid_usernames = subscription.get_usernames(ignore_id=True)
         authed = subscription.get_authed()
         reformat_manager = ReformatManager(authed, self)
@@ -245,14 +247,20 @@ class FilesystemManager:
                                 username=valid_usernames[-1],
                             )
                         )
-                        formatted_download_directory = (
+                        new_formatted_download_directory = (
                             download_directory_reformat_item.remove_non_unique(
                                 directory_manager, "file_directory_format"
                             )
                         )
-                        if not formatted_download_directory.exists():
+                        if not new_formatted_download_directory.exists():
+                            # formatted_download_directory.mkdir(
+                            #     exist_ok=True, parents=True
+                            # )
                             formatted_download_directory.rename(
-                                formatted_download_directory
+                                new_formatted_download_directory
+                            )
+                            formatted_download_directory = (
+                                new_formatted_download_directory
                             )
                         return formatted_download_directory
                     return formatted_download_directory

@@ -58,7 +58,9 @@ class AioPikaWrapper:
             await self.connect()
         assert self.channel is not None
         return await self.channel.declare_queue(
-            queue_name, durable=durable, arguments={"x-message-deduplication": True}
+            queue_name,
+            durable=durable,
+            arguments={"x-message-deduplication": True, "x-max-priority": 10},
         )
 
     async def publish_message(

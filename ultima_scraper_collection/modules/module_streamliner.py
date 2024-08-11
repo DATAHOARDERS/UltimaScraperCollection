@@ -64,52 +64,36 @@ async def find_earliest_non_downloaded_message(
     site_api = datascraper.server_manager.ultima_archive_db_api.get_site_api(
         authed.get_api().site_name
     )
-    temp_db_messages = await site_api.schema.session.scalars(
-        select(DBMessageModel)
-        .where(
-            or_(
-                and_(
-                    DBMessageModel.user_id == authed.id,
-                    DBMessageModel.receiver_id == user.id,
-                ),
-                and_(
-                    DBMessageModel.user_id == user.id,
-                    DBMessageModel.receiver_id == authed.id,
-                ),
-            )
-        )
-        .order_by(DBMessageModel.id.desc())
-        .options(
-            joinedload(DBMessageModel.media)
-            .joinedload(DBMediaModel.filepaths)
-            .joinedload(DBFilePathModel.message)
-        )
-    )
-
-    db_messages = temp_db_messages.unique().all()
     earliest_non_downloaded_message = None
     found_media = False
-
+    db_performer = datascraper.db_performers[user.id]
+    db_content_manager = db_performer.content_manager
+    assert db_content_manager, "Content manager not found"
+    db_messages = db_content_manager.messages
     for db_message in db_messages:
-        all_media_downloaded = False
-        if db_message.media:
-            found_media = True
-        else:
-            continue
-        for media in db_message.media:
-            for filepath in media.filepaths:
-                if not filepath.message:
-                    continue
-                if filepath.downloaded:
-                    all_media_downloaded = True
-                    break
+        if (db_message.user_id == authed.id and db_message.receiver_id == user.id) or (
+            db_message.user_id == user.id and db_message.receiver_id == authed.id
+        ):
+            all_media_downloaded = False
+            if db_message.media:
+                found_media = True
+            else:
+                continue
+            for media in db_message.media:
+                for filepath in media.filepaths:
+                    if not filepath.message:
+                        continue
+                    if filepath.downloaded:
+                        all_media_downloaded = True
+                        break
 
-        if not all_media_downloaded:
-            if (
-                earliest_non_downloaded_message is None
-                or db_message.created_at < earliest_non_downloaded_message.created_at
-            ):
-                earliest_non_downloaded_message = db_message
+            if not all_media_downloaded:
+                if (
+                    earliest_non_downloaded_message is None
+                    or db_message.created_at
+                    < earliest_non_downloaded_message.created_at
+                ):
+                    earliest_non_downloaded_message = db_message
     if found_media:
         earliest_non_downloaded_message = db_messages[0]
     await site_api.schema.session.commit()
@@ -124,6 +108,7 @@ class StreamlinedDatascraper:
         self.filesystem_manager = FilesystemManager()
         self.media_types = self.datascraper.api.MediaTypes()
         self.user_list: set[user_types] = set()
+        self.db_performers: dict[int, UserModel] = {}
         self.metadata_manager_users: dict[int, MetadataManager] = {}
         self.server_manager: ServerManager = server_manager
         self.content_managers: dict[int, ContentManager] = {}
@@ -447,11 +432,13 @@ class StreamlinedDatascraper:
                     media_metadata = content_manager.find_media(
                         category=api_type, media_id=db_media.id
                     )
-                if media_metadata:
+                if media_metadata and media_metadata.urls:
                     media_metadata.__db_media__ = db_media
                     final_download_set.add(media_metadata)
         total_media_count = len(final_download_set)
-        download_media_count = 0
+        download_media_count = len(
+            [x for x in final_download_set if not x.get_filepath().exists()]
+        )
         directory = performer_directory_manager.user.download_directory
         if final_download_set:
             string = "Processing Download:\n"
@@ -551,7 +538,11 @@ class StreamlinedDatascraper:
                     #     return None
                     return None
                 else:
-                    performer = paid_contents[0].get_author()
+                    performer = [
+                        x.get_author()
+                        for x in paid_contents
+                        if x.get_author().id == db_performer.id
+                    ][0]
                     temp_performer = await authed.get_user(performer.id, refresh=True)
                     if not temp_performer:
                         performer.is_deleted = True
@@ -566,5 +557,6 @@ class StreamlinedDatascraper:
         ):
             if performer.is_blocked:
                 await performer.unblock()
-        performer.aliases = [x.username for x in db_performer.aliases]
+        performer.add_aliases([x.username for x in db_performer.aliases])
+        performer.username = performer.get_usernames()[0]
         return performer
