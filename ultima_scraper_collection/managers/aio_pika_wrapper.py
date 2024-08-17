@@ -103,6 +103,13 @@ class AioPikaWrapper:
         await self.publish_message("telegram_notifications", message)
         await self.publish_message("discord_notifications", message)
 
+    async def push_back_message(
+        self, queue_name: str, message: aio_pika.abc.AbstractIncomingMessage
+    ):
+        await message.reject()
+        task = ujson.loads(message.body.decode())
+        await self.publish_message(queue_name, task)
+
     async def close(self):
         if self.connection:
             await self.connection.close()
