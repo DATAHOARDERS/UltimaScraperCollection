@@ -452,8 +452,6 @@ class StreamlinedDatascraper:
         )
         await download_manager.bulk_download()
         await site_db_api.schema.session.commit()
-        if final_download_set:
-            pass
         if current_job:
             current_job.done = True
 

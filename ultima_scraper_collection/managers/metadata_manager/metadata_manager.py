@@ -199,6 +199,8 @@ class ApiExtractor:
                     media_created_at = datetime.fromisoformat(
                         asset_metadata["createdAt"]
                     )
+                elif asset_metadata["createdAt"] == None:
+                    media_created_at = self.item.created_at
                 else:
                     media_created_at = datetime.fromtimestamp(
                         asset_metadata["createdAt"]
