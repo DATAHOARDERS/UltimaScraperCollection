@@ -68,7 +68,7 @@ class AioPikaWrapper:
         queue_name: str,
         message: dict[str, Any],
         durable: bool = True,
-        priority: int = 0,
+        priority: int | None = None,
     ):
         if self.channel is None:
             await self.connect()
@@ -104,11 +104,14 @@ class AioPikaWrapper:
         await self.publish_message("discord_notifications", message)
 
     async def push_back_message(
-        self, queue_name: str, message: aio_pika.abc.AbstractIncomingMessage
+        self,
+        queue_name: str,
+        message: aio_pika.abc.AbstractIncomingMessage,
+        priority: int | None = None,
     ):
         await message.reject()
         task = ujson.loads(message.body.decode())
-        await self.publish_message(queue_name, task)
+        await self.publish_message(queue_name, task, priority=priority)
 
     async def close(self):
         if self.connection:
