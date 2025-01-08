@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import traceback
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,12 +10,6 @@ from alive_progress import alive_bar
 from ultima_scraper_api import auth_types
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MediaModel,
-    MessageModel,
-)
-from ultima_scraper_renamer.reformat import ReformatManager
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -22,6 +17,11 @@ from ultima_scraper_collection.managers.filesystem_manager import FilesystemMana
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MediaMetadata,
 )
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MediaModel,
+    MessageModel,
+)
+from ultima_scraper_renamer.reformat import ReformatManager
 
 
 class DownloadManager:
@@ -42,12 +42,31 @@ class DownloadManager:
         self.reformat_manager = ReformatManager(self.authed, filesystem_manager)
         self.bar = None
 
+    async def check_total_size(self):
+        async def get_file_size(file: MediaMetadata):
+            if len(file.urls) > 1:
+                return 0  # Skip files with multiple URLs as in your logic
+            response = await self.auth_session.active_session.head(file.urls[0])
+            return response.content_length if response.content_length else 0
+
+        tasks = [get_file_size(file) for file in self.content_list]
+        sizes = await asyncio.gather(*tasks)
+        return sum(sizes)
+
     async def bulk_download(self):
-        final_list = [self.download(media_item) for media_item in self.content_list]
+        queue: asyncio.Queue[tuple[Path, list[Path]]] = asyncio.Queue()
+        worker_task = asyncio.create_task(self.ffmpeg_worker(queue))
+        final_list = [
+            self.download(media_item, queue) for media_item in self.content_list
+        ]
+
         if final_list:
             with alive_bar(len(self.content_list)) as bar:
                 self.bar = bar
                 _result = await asyncio.gather(*final_list, return_exceptions=True)
+        await queue.join()
+        worker_task.cancel()
+        await asyncio.gather(worker_task, return_exceptions=True)
 
     async def drm_download(self, download_item: MediaMetadata):
         content_metadata = download_item.__content_metadata__
@@ -107,7 +126,11 @@ class DownloadManager:
                 responses.append(response)
         return responses
 
-    async def download(self, download_item: MediaMetadata):
+    async def download(
+        self,
+        download_item: MediaMetadata,
+        ffmpeg_queue: asyncio.Queue[tuple[Path, list[Path]]],
+    ):
         if not download_item.urls:
             return
         attempt = 0
@@ -120,20 +143,15 @@ class DownloadManager:
             assert db_content
             if isinstance(db_content, MessageModel):
                 if db_content.queue_id:
-                    try:
-                        db_filepath = db_media.find_filepath(
-                            (db_content.queue_id, "MassMessages")
-                        )
-                    except Exception as _e:
-                        pass
-                    pass
+                    db_filepath = db_media.find_filepath(
+                        (db_content.queue_id, "MassMessages")
+                    )
                 else:
                     db_filepath = db_media.find_filepath()
             else:
                 db_filepath = db_media.find_filepath()
         else:
             db_filepath = db_media.find_filepath()
-            pass
         matches = ["us", "uk", "ca", "ca2", "de"]
         p_url = urlparse(download_item.urls[0])
         assert p_url.hostname
@@ -165,26 +183,30 @@ class DownloadManager:
                     decrypted_media_paths: list[Path] = []
                     final_size = 0
                     error = None
-                    for response in responses:
-                        if download_item.drm and await self.drm_check_downloaded(
-                            download_item
-                        ):
-                            continue
-                        download_path, error = await self.writer(
-                            response, download_item, encrypted=bool(download_item.key)
-                        )
-                        if error:
-                            attempt += 1
-                            break
-                        if authed_drm and download_item.drm and download_path:
-                            output_filepath = authed_drm.decrypt_file(
-                                download_path, download_item.key
+                    process_responses = True
+                    if download_item.drm and await self.drm_check_downloaded(
+                        download_item
+                    ):
+                        process_responses = False
+                    if process_responses:
+                        for response in responses:
+                            download_path, error = await self.writer(
+                                response,
+                                download_item,
+                                encrypted=bool(download_item.key),
                             )
-                            if not output_filepath:
-                                raise Exception("No output_filepath")
-                            decrypted_media_paths.append(output_filepath)
-                        if response.content_length:
-                            final_size += response.content_length
+                            if error:
+                                attempt += 1
+                                break
+                            if authed_drm and download_item.drm and download_path:
+                                output_filepath = authed_drm.decrypt_file(
+                                    download_path, download_item.key
+                                )
+                                if not output_filepath:
+                                    raise Exception("No output_filepath")
+                                decrypted_media_paths.append(output_filepath)
+                            if response.content_length:
+                                final_size += response.content_length
                     if error == 1:
                         # Server Disconnect Error
                         continue
@@ -196,12 +218,16 @@ class DownloadManager:
                         download_item.filename
                     )
                     if authed_drm and download_item.drm:
-                        formatted = self.format_media(
-                            download_path,
-                            decrypted_media_paths,
-                        )
-                        if not formatted:
-                            pass
+                        future = asyncio.get_event_loop().create_future()
+                        task = (download_path, decrypted_media_paths, future)
+                        await ffmpeg_queue.put(task)
+                        await future
+                        # _formatted = self.format_media(
+                        #     download_path,
+                        #     decrypted_media_paths,
+                        # )
+                        for path in decrypted_media_paths:
+                            path.unlink()
                         final_size = download_path.stat().st_size
                     timestamp = db_media.created_at.timestamp()
                     await main_helper.format_file(
@@ -218,7 +244,7 @@ class DownloadManager:
                 except asyncio.TimeoutError as _e:
                     continue
                 except Exception as _e:
-                    print(_e)
+                    traceback.print_exc()
         self.bar()
 
     async def writer(
@@ -233,6 +259,9 @@ class DownloadManager:
                 download_item = self.reformat_manager.drm_format(
                     response.url.human_repr(), download_item
                 )
+                downloaded = await self.drm_check_downloaded(download_item)
+                if downloaded:
+                    return download_item.get_filepath(), None
             assert download_item.directory and download_item.filename
             download_path = Path(download_item.directory, download_item.filename)
             db_media = copy.copy(download_item.__db_media__)
@@ -246,9 +275,14 @@ class DownloadManager:
 
     async def drm_check_downloaded(self, download_item: MediaMetadata):
         download_path = download_item.get_filepath()
+        if ".enc" in download_path.name:
+            download_path = Path(download_path.as_posix().replace(".enc", ".dec"))
         if download_path.exists():
-            if download_path.stat().st_size and download_item.__db_media__.size:
+            try:
+                ffmpeg.probe(download_path.as_posix())
                 return True
+            except ffmpeg.Error as _e:
+                return False
         return False
 
     async def check(self, download_item: MediaModel, response: ClientResponse):
@@ -276,21 +310,65 @@ class DownloadManager:
                 # Reached this point because it probably exists in the folder but under a different content category
                 pass
 
-    def format_media(self, output_filepath: Path, decrypted_media_paths: list[Path]):
+    def get_format(self, filepath: Path) -> str:
+        """Get the container format of a media file using ffprobe."""
+        try:
+            probe = ffmpeg.probe(filepath.as_posix())
+            return probe["format"][
+                "format_name"
+            ]  # Short format name (e.g., 'mp4', 'mov')
+        except ffmpeg.Error as e:
+            raise Exception(f"Error probing file {filepath}: {e.stderr.decode()}")
+
+    def get_preferred_format(self, filepath: Path) -> str:
+        """Extract the preferred container format from the file."""
+        try:
+            probe = ffmpeg.probe(filepath.as_posix())
+            format_names = probe["format"][
+                "format_name"
+            ]  # E.g., "mov,mp4,m4a,3gp,3g2,mj2"
+            formats = format_names.split(",")  # Split into a list
+            # Prioritize 'mp4' if available, otherwise take the first format
+            return "mp4" if "mp4" in formats else formats[0]
+        except ffmpeg.Error as e:
+            raise Exception(f"Error probing file {filepath}: {e.stderr.decode()}")
+
+    async def format_media(
+        self, output_filepath: Path, decrypted_media_paths: list[Path]
+    ):
         # If you have decrypted video and audio to merge
         if len(decrypted_media_paths) > 1:
             dec_video_path, dec_audio_path = decrypted_media_paths
             video_input = ffmpeg.input(dec_video_path)  # type:ignore
             audio_input = ffmpeg.input(dec_audio_path)  # type:ignore
+
             try:
+                # Dynamically determine the preferred format
+                output_format = self.get_preferred_format(dec_video_path)
+
+                temp_output_filepath = output_filepath.with_suffix(".part")
                 _ffmpeg_output = ffmpeg.output(  # type:ignore
                     video_input,  # type:ignore
                     audio_input,  # type:ignore
-                    output_filepath.as_posix(),
+                    temp_output_filepath.as_posix(),
                     vcodec="copy",
                     acodec="copy",
+                    f=output_format,  # Dynamically set the format
                 ).run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+
+                temp_output_filepath.rename(output_filepath)
                 return True
             except ffmpeg.Error as _e:
                 return False
         return True
+
+    async def ffmpeg_worker(self, queue: asyncio.Queue[tuple[Path, list[Path]]]):
+        while True:
+            output_filepath, decrypted_media_paths, future = await queue.get()
+            try:
+                result = await self.format_media(output_filepath, decrypted_media_paths)
+                future.set_result(result)
+            except Exception as e:
+                future.set_exception(e)
+            finally:
+                queue.task_done()
