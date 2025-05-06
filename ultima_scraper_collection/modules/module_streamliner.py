@@ -317,6 +317,10 @@ class StreamlinedDatascraper:
                     pass
                 case "Posts":
                     temp_master_set = await self.datascraper.get_all_posts(user)
+                    # temp_master_set = [
+                    #     x for x in temp_master_set if x.id in [1264067231, 306722777]
+                    # ]
+                    pass
                 case "Messages":
                     db_message = await find_earliest_non_downloaded_message(
                         user, self.datascraper
@@ -324,7 +328,13 @@ class StreamlinedDatascraper:
                     cutoff_id = db_message.id if db_message else None
                     temp_master_set = await user.get_messages(cutoff_id=cutoff_id)
                 case "Chats":
-                    pass
+                    if isinstance(authed, OnlyFansAuthModel):
+                        if user.is_authed_user():
+                            chats = await authed.get_chats()
+                            temp_master_set = []
+                            for chat in chats:
+                                messages = await chat.get_messages()
+                                temp_master_set.extend(messages)
                 case "Highlights":
                     pass
                 case "MassMessages":
@@ -412,33 +422,41 @@ class StreamlinedDatascraper:
         for db_media in db_medias.values():
             content_info = None
             if api_type == "Uncategorized":
+                media_metadata = content_manager.media_manager.medias.get(db_media.id)
+            else:
+                media_metadata = content_manager.find_media(
+                    category=api_type, media_id=db_media.id
+                )
+            if not media_metadata:
+                continue
+            if api_type == "Uncategorized":
                 await db_media.awaitable_attrs.content_media_assos
                 if db_media.content_media_assos:
                     continue
                 if len(db_media.filepaths) > 1:
                     continue
             else:
-                db_content = await db_media.find_content(api_type)
+                content_metadata = media_metadata.get_content_metadata()
+                if not content_metadata:
+                    continue
+                db_content = await db_media.find_content(
+                    api_type, content_metadata.content_id
+                )
                 if not db_content:
                     continue
                 content_info = (db_content.id, api_type)
             db_filepath = db_media.find_filepath(content_info)
             if db_filepath:
-                if api_type == "Uncategorized":
-                    media_metadata = content_manager.media_manager.medias.get(
-                        db_media.id
-                    )
-                else:
-                    media_metadata = content_manager.find_media(
-                        category=api_type, media_id=db_media.id
-                    )
                 if media_metadata and media_metadata.urls:
                     media_metadata.__db_media__ = db_media
                     final_download_set.add(media_metadata)
         total_media_count = len(final_download_set)
-        download_media_count = len(
-            [x for x in final_download_set if not x.get_filepath().exists()]
-        )
+        non_downloaded = [
+            x for x in final_download_set if not x.get_filepath().exists()
+        ]
+        if non_downloaded:
+            pass
+        download_media_count = len(non_downloaded)
         directory = performer_directory_manager.user.download_directory
         if final_download_set:
             string = "Processing Download:\n"

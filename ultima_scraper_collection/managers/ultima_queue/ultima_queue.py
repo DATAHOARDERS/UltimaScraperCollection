@@ -77,6 +77,12 @@ class StandardData:
         success_queue_name: str | None = None,
         failure_queue_name: str | None = None,
     ) -> MandatoryJob:
+        # Check if a job with the same job_name already exists
+        for job in self.mandatory_jobs:
+            if job.job_name == job_name:
+                return job  # Return the existing job if found
+
+        # If no match is found, create and add the new job
         mandatory_job = MandatoryJob(job_name, success_queue_name, failure_queue_name)
         self.mandatory_jobs.append(mandatory_job)
         return mandatory_job
@@ -122,11 +128,11 @@ class UltimaQueue:
         queue_name: str,
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
+        prefetch_count: int = 0,
     ):
         """Consume messages from a specified queue."""
         if not self.channel or self.channel.is_closed:
-            await self.connect()
-
+            await self.connect(prefetch_count=prefetch_count)
         queue = await self.declare_queue(queue_name)
 
         async with queue.iterator() as queue_iter:
@@ -134,6 +140,7 @@ class UltimaQueue:
                 try:
                     async with message.process(requeue=True, ignore_processed=True):
                         await callback(message, *args)
+                        # await message.ack()
                 except Exception as _e:
                     continue
         await self.disconnect()
@@ -144,8 +151,10 @@ class UltimaQueue:
         message: dict[str, Any],
         durable: bool = True,
         priority: int | None = None,
-        unique_id: str | None = None,
+        unique_id: int | str | None = None,
+        headers: dict[str, Any] = {},
         print_error: bool = True,
+        surpress: bool = False,
     ):
         if self.channel is None:
             await self.connect()
@@ -154,13 +163,14 @@ class UltimaQueue:
 
         if unique_id is None:
             unique_id = message.get("id")
-        headers: dict[str, Any] = {}
         if unique_id:
-            headers = {"x-deduplication-header": unique_id}
+            # unique_id = str(unique_id)
+            if not headers:
+                headers = {"x-deduplication-header": unique_id}
         try:
             await self.channel.default_exchange.publish(
                 aio_pika.Message(
-                    body=orjson.dumps(message),
+                    body=orjson.dumps(message, option=orjson.OPT_NON_STR_KEYS),
                     delivery_mode=(
                         aio_pika.DeliveryMode.PERSISTENT
                         if durable
@@ -171,7 +181,8 @@ class UltimaQueue:
                 ),
                 routing_key=queue_name,
             )
-            print(f"Message published to {queue_name}")
+            if not surpress:
+                print(f"Message published to {queue_name}")
             return True
         except aio_pika.exceptions.DeliveryError as e:
             if print_error:
@@ -190,7 +201,9 @@ class UltimaQueue:
     ):
         await message.reject()
         task = orjson.loads(message.body.decode())
-        await self.publish_message(queue_name, task, priority=priority)
+        await self.publish_message(
+            queue_name, task, priority=priority, headers=message.headers
+        )
 
     async def close(self):
         if self.connection:

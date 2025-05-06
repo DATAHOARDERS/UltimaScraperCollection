@@ -65,31 +65,34 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             content_result.id, api_type, self.resolve_content_manager(subscription)
         )
 
-        await content_metadata.resolve_extractor(ApiExtractor(content_result))
-        for asset in content_metadata.medias:
-            if asset.urls:
-                reformat_manager = ReformatManager(authed, self.filesystem_manager)
-                reformat_item = reformat_manager.prepare_reformat(asset)
-                if reformat_item.api_type == "Messages":
-                    if (
-                        content_metadata.queue_id
-                        and content_metadata.__soft__.is_mass_message()
-                    ):
-                        reformat_item.api_type = "MassMessages"
-                file_directory = reformat_item.reformat(
-                    site_config.download_setup.directory_format
-                )
-                reformat_item.directory = file_directory
-                file_path = reformat_item.reformat(
-                    site_config.download_setup.filename_format
-                )
-                asset.directory = file_directory
-                asset.filename = file_path.name
-
-                if file_directory not in directories:
-                    directories.append(file_directory)
-        new_set["content"].append(content_metadata)
-        new_set["directories"] = directories
+        try:
+            await content_metadata.resolve_extractor(ApiExtractor(content_result))
+            for asset in content_metadata.medias:
+                if asset.urls:
+                    reformat_manager = ReformatManager(authed, self.filesystem_manager)
+                    reformat_item = reformat_manager.prepare_reformat(asset)
+                    if reformat_item.api_type == "Messages":
+                        if (
+                            content_metadata.queue_id
+                            and content_metadata.__soft__.is_mass_message()
+                        ):
+                            reformat_item.api_type = "MassMessages"
+                    file_directory = reformat_item.reformat(
+                        site_config.download_setup.directory_format
+                    )
+                    reformat_item.directory = file_directory
+                    file_path = reformat_item.reformat(
+                        site_config.download_setup.filename_format
+                    )
+                    asset.directory = file_directory
+                    asset.filename = file_path.name
+                    if file_directory not in directories:
+                        directories.append(file_directory)
+            new_set["content"].append(content_metadata)
+            new_set["directories"] = directories
+        except Exception as e:
+            print(e)
+            pass
         return new_set
 
     async def get_all_stories(self, subscription: "create_user"):
@@ -131,7 +134,6 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             posts = await performer.get_posts(after_date=after_date)
             archived_posts = await performer.get_posts(label="archived")
             private_archived_posts = await performer.get_posts(label="private_archived")
-
             session = db_site_api.get_session()
             posts_with_comments = (
                 select(PostModel)
@@ -145,6 +147,12 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             threshold_date = (
                 db_posts[0].created_at
                 if db_posts
+                else datetime.min.replace(tzinfo=timezone.utc)
+            )
+            latest_post_dates = [x.created_at for x in db_posts if x.comments]
+            threshold_date = (
+                latest_post_dates[-1]
+                if latest_post_dates
                 else datetime.min.replace(tzinfo=timezone.utc)
             )
             tasks = [

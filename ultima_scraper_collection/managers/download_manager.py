@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import ffmpeg
-from aiohttp import ClientResponse
+from aiohttp import ClientConnectionError, ClientResponse
 from alive_progress import alive_bar
 from ultima_scraper_api import auth_types
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
@@ -53,20 +53,120 @@ class DownloadManager:
         sizes = await asyncio.gather(*tasks)
         return sum(sizes)
 
+    async def process_download_item(self, download_item: MediaMetadata):
+        try:
+            db_media = download_item.__db_media__
+        except Exception as _e:
+            pass
+        assert db_media
+        content = download_item.get_content_metadata()
+        if content:
+            db_content = content.__db_content__
+            assert db_content
+            if isinstance(db_content, MessageModel):
+                if db_content.queue_id:
+                    db_filepath = db_media.find_filepath(
+                        (db_content.queue_id, "MassMessages")
+                    )
+                else:
+                    db_filepath = db_media.find_filepath()
+            else:
+                db_filepath = db_media.find_filepath()
+        else:
+            db_filepath = db_media.find_filepath()
+        if isinstance(download_item, MediaMetadata):
+            final_filepath = download_item.directory.joinpath(download_item.filename)
+            if final_filepath.exists():
+                final_size = final_filepath.stat().st_size
+                timestamp = db_media.created_at.timestamp()
+                await main_helper.format_file(
+                    final_filepath,
+                    timestamp,
+                    self.reformat,
+                )
+                if db_media and db_filepath:
+                    if not db_filepath.preview:
+                        db_media.size = download_item.size = final_size
+                    else:
+                        if final_size > db_media.size:
+                            db_media.size = final_size
+                    db_filepath.downloaded = True
+
     async def bulk_download(self):
         queue: asyncio.Queue[tuple[Path, list[Path]]] = asyncio.Queue()
         worker_task = asyncio.create_task(self.ffmpeg_worker(queue))
         final_list = [
             self.download(media_item, queue) for media_item in self.content_list
         ]
-
+        global_settings = self.authed.get_api().get_global_settings()
+        decrypt_media_path = global_settings.drm.decrypt_media_path
         if final_list:
-            with alive_bar(len(self.content_list)) as bar:
-                self.bar = bar
-                _result = await asyncio.gather(*final_list, return_exceptions=True)
+            with alive_bar(
+                len(self.content_list),
+                title="Downloading Media Items",
+                spinner="dots",
+                bar="smooth",
+                enrich_print=True,
+            ) as bar:
+                self.bar = bar  # Allow updates within `self.download` if needed
+
+                # Run tasks asynchronously and track progress
+                results = await asyncio.gather(*final_list, return_exceptions=True)
+
+            drm_results = [
+                x for x in results if x and isinstance(x, MediaMetadata) and x.drm
+            ]
+            if drm_results:
+                with alive_bar(
+                    len(drm_results),
+                    title="Processing DRM-protected files",
+                    spinner="dots",
+                    bar="smooth",
+                    enrich_print=True,
+                ) as bar:
+                    authed_drm = self.authed.drm
+                    for download_item in drm_results:
+                        try:
+                            final_download_path = download_item.directory.joinpath(
+                                download_item.filename
+                            )
+
+                            if authed_drm and download_item.drm:
+                                bar.text(f"Decrypting: {download_item.filename}")
+                                decrypted_media_paths: list[Path] = []
+                                for download_path in download_item.drm_download_paths:
+                                    output_filepath = authed_drm.decrypt_file(
+                                        download_path,
+                                        download_item.key,
+                                        temp_output_path=decrypt_media_path,
+                                    )
+                                    if not output_filepath:
+                                        raise Exception("No output_filepath")
+                                    decrypted_media_paths.append(output_filepath)
+
+                                bar.text(f"Merging: {download_item.filename}")
+                                future = asyncio.get_event_loop().create_future()
+                                task = (
+                                    final_download_path,
+                                    decrypted_media_paths,
+                                    future,
+                                )
+                                await queue.put(task)
+                                await future
+                            bar()
+                        except Exception as e:
+                            pass
+
+            tasks = []
+            for download_item in results:
+                if not download_item:
+                    continue
+                tasks.append(self.process_download_item(download_item))
+            await asyncio.gather(*tasks)
         await queue.join()
         worker_task.cancel()
         await asyncio.gather(worker_task, return_exceptions=True)
+        pass
 
     async def drm_download(self, download_item: MediaMetadata):
         content_metadata = download_item.__content_metadata__
@@ -131,121 +231,103 @@ class DownloadManager:
         download_item: MediaMetadata,
         ffmpeg_queue: asyncio.Queue[tuple[Path, list[Path]]],
     ):
-        if not download_item.urls:
-            return
-        attempt = 0
-        db_media = download_item.__db_media__
-        assert db_media
-        await db_media.awaitable_attrs.content_media_assos
-        content = download_item.get_content_metadata()
-        if content:
-            db_content = content.__db_content__
-            assert db_content
-            if isinstance(db_content, MessageModel):
-                if db_content.queue_id:
-                    db_filepath = db_media.find_filepath(
-                        (db_content.queue_id, "MassMessages")
-                    )
-                else:
-                    db_filepath = db_media.find_filepath()
-            else:
-                db_filepath = db_media.find_filepath()
-        else:
-            db_filepath = db_media.find_filepath()
-        matches = ["us", "uk", "ca", "ca2", "de"]
-        p_url = urlparse(download_item.urls[0])
-        assert p_url.hostname
-        subdomain = p_url.hostname.split(".")[0]
-        if any(subdomain in nm for nm in matches):
-            return
+        try:
+            if not download_item.urls:
+                return
+            attempt = 0
+            try:
+                db_media = download_item.__db_media__
+            except Exception as _e:
+                pass
+            assert db_media
+            await db_media.awaitable_attrs.content_media_assos
+            matches = ["us", "uk", "ca", "ca2", "de", "sg"]
+            p_url = urlparse(download_item.urls[0])
+            assert p_url.hostname
+            subdomain = p_url.hostname.split(".")[0]
+            if any(subdomain in nm for nm in matches):
+                return
 
-        authed = self.authed
-        authed_drm = authed.drm
+            authed = self.authed
+            authed_drm = authed.drm
 
-        async with self.auth_session.semaphore:
-            while attempt < self.auth_session.get_session_manager().max_attempts + 1:
-                try:
-                    if download_item.drm:
-                        if not authed_drm:
+            async with self.auth_session.semaphore:
+                while (
+                    attempt < self.auth_session.get_session_manager().max_attempts + 1
+                ):
+                    try:
+                        if download_item.drm:
+
+                            if not authed_drm:
+                                break
+                            responses = await self.drm_download(download_item)
+                        else:
+                            responses = [
+                                await self.requester.request(download_item.urls[0])
+                            ]
+                        if all(response.status != 200 for response in responses):
+                            attempt += 1
+                            continue
+                        if not download_item.directory:
+                            raise Exception(
+                                f"{download_item.id} has no directory\n {download_item}"
+                            )
+                        final_size = 0
+                        error = None
+                        process_responses = True
+                        if download_item.drm and await self.drm_check_downloaded(
+                            download_item
+                        ):
+                            process_responses = False
+                        if process_responses:
+                            for response in responses:
+                                download_path, error = await self.writer(
+                                    response,
+                                    download_item,
+                                    encrypted=bool(download_item.key),
+                                )
+                                if error:
+                                    attempt += 1
+                                    break
+                                if download_item.drm and download_path:
+                                    if (
+                                        download_path
+                                        not in download_item.drm_download_paths
+                                    ):
+                                        download_item.drm_download_paths.append(
+                                            download_path
+                                        )
+                                # if authed_drm and download_item.drm and download_path:
+                                #     output_filepath = authed_drm.decrypt_file(
+                                #         download_path, download_item.key
+                                #     )
+                                #     if not output_filepath:
+                                #         raise Exception("No output_filepath")
+                                #     decrypted_media_paths.append(output_filepath)
+                                if response.content_length:
+                                    final_size += response.content_length
+                        if error == 1:
+                            # Server Disconnect Error
+                            continue
+                        elif error == 2:
+                            # Resource Not Found Error
                             break
-                        responses = await self.drm_download(download_item)
-                    else:
-                        responses = [
-                            await self.requester.request(download_item.urls[0])
-                        ]
-                    if all(response.status != 200 for response in responses):
+                        assert download_item.filename
+                        download_path = download_item.directory.joinpath(
+                            download_item.filename
+                        )
+                        break
+                    except asyncio.TimeoutError as _e:
+                        continue
+                    except ClientConnectionError as _e:
                         attempt += 1
                         continue
-                    if not download_item.directory:
-                        raise Exception(
-                            f"{download_item.id} has no directory\n {download_item}"
-                        )
-                    decrypted_media_paths: list[Path] = []
-                    final_size = 0
-                    error = None
-                    process_responses = True
-                    if download_item.drm and await self.drm_check_downloaded(
-                        download_item
-                    ):
-                        process_responses = False
-                    if process_responses:
-                        for response in responses:
-                            download_path, error = await self.writer(
-                                response,
-                                download_item,
-                                encrypted=bool(download_item.key),
-                            )
-                            if error:
-                                attempt += 1
-                                break
-                            if authed_drm and download_item.drm and download_path:
-                                output_filepath = authed_drm.decrypt_file(
-                                    download_path, download_item.key
-                                )
-                                if not output_filepath:
-                                    raise Exception("No output_filepath")
-                                decrypted_media_paths.append(output_filepath)
-                            if response.content_length:
-                                final_size += response.content_length
-                    if error == 1:
-                        # Server Disconnect Error
-                        continue
-                    elif error == 2:
-                        # Resource Not Found Error
-                        break
-                    assert download_item.filename
-                    download_path = download_item.directory.joinpath(
-                        download_item.filename
-                    )
-                    if authed_drm and download_item.drm:
-                        future = asyncio.get_event_loop().create_future()
-                        task = (download_path, decrypted_media_paths, future)
-                        await ffmpeg_queue.put(task)
-                        await future
-                        # _formatted = self.format_media(
-                        #     download_path,
-                        #     decrypted_media_paths,
-                        # )
-                        for path in decrypted_media_paths:
-                            path.unlink()
-                        final_size = download_path.stat().st_size
-                    timestamp = db_media.created_at.timestamp()
-                    await main_helper.format_file(
-                        download_path, timestamp, self.reformat
-                    )
-                    if db_media and db_filepath:
-                        if not db_filepath.preview:
-                            db_media.size = download_item.size = final_size
-                        else:
-                            if final_size > db_media.size:
-                                db_media.size = final_size
-                        db_filepath.downloaded = True
-                    break
-                except asyncio.TimeoutError as _e:
-                    continue
-                except Exception as _e:
-                    traceback.print_exc()
-        self.bar()
+                    except Exception as _e:
+                        traceback.print_exc()
+            self.bar()
+            return download_item
+        except Exception as _e:
+            pass
 
     async def writer(
         self,
@@ -368,6 +450,8 @@ class DownloadManager:
             try:
                 result = await self.format_media(output_filepath, decrypted_media_paths)
                 future.set_result(result)
+                for path in decrypted_media_paths:
+                    path.unlink()
             except Exception as e:
                 future.set_exception(e)
             finally:

@@ -33,8 +33,9 @@ def create_message(
 
 
 class AioPikaWrapper:
-    def __init__(self, host: str = "localhost"):
-        self.amqp_url = f"amqp://{host}/"
+    def __init__(self, host: str = "localhost", heartbeat: int | None = None):
+        heartbeat_param = f"?heartbeat={heartbeat}" if heartbeat is not None else ""
+        self.amqp_url = f"amqp://{host}/{heartbeat_param}"
         self.connection = None
         self.channel = None
 
@@ -47,14 +48,18 @@ class AioPikaWrapper:
         return self.channel
 
     async def connect(self, prefetch_count: int = 0):
-        if self.connection is not None:
+        if self.connection and not self.connection.is_closed:
             return
         self.connection = await aio_pika.connect_robust(self.amqp_url)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=prefetch_count)
 
+    async def disconnect(self):
+        if self.connection:
+            await self.connection.close()
+
     async def declare_queue(self, queue_name: str, durable: bool = True):
-        if self.channel is None:
+        if not self.channel or self.channel.is_closed:
             await self.connect()
         assert self.channel is not None
         return await self.channel.declare_queue(
@@ -69,6 +74,7 @@ class AioPikaWrapper:
         message: dict[str, Any],
         durable: bool = True,
         priority: int | None = None,
+        print_error: bool = True,
     ):
         if self.channel is None:
             await self.connect()
@@ -96,7 +102,8 @@ class AioPikaWrapper:
             print(f"Message published to {queue_name}")
             return True
         except aio_pika.exceptions.DeliveryError as e:
-            print(f"Error publishing message: {e}")
+            if print_error:
+                print(f"Error publishing message: {e}")
             return False
 
     async def publish_notification(self, message: dict[str, Any]):

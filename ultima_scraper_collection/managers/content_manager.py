@@ -50,10 +50,26 @@ class ContentManager:
 
     def find_media(self, category: str, media_id: int):
         content_items = getattr(self.categorized, category)
+        medias = []
         for content in content_items.values():
             for media in content.medias:
                 if media.id == media_id:
-                    return media
+                    medias.append(media)
+        if medias:
+            for media in medias:
+                ad = self.find_content(
+                    media.get_content_metadata().content_id, category
+                )
+                pass
+            medias.sort(
+                key=lambda media: (
+                    media.get_content_metadata().paid is not None,
+                    media.get_content_metadata().paid,
+                ),
+                reverse=True,
+            )
+            media = medias[0]
+            return media
 
     def get_all_media_ids(self):
         return list(chain(*[x for x in self.categorized.__dict__.values()]))

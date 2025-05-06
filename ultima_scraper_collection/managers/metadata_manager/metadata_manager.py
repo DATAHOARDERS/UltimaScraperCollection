@@ -254,8 +254,9 @@ class ApiExtractor:
 
     def resolve_paid(self):
         if hasattr(self.item, "price"):
-            if all(media["canView"] for media in self.item.media):
-                return True
+            if self.item.price and self.item.price > 0:
+                if all(media["canView"] for media in self.item.media):
+                    return True
             return False
         else:
             return None
@@ -366,6 +367,7 @@ class MediaMetadata:
         self.__content_metadata__ = content_metadata
         self.__db_media__: DBMediaModel | None = None
         self.content_manager = content_manager
+        self.drm_download_paths: list[Path] = []
         assert self.id
         self.content_manager.media_manager.medias[self.id] = self
 

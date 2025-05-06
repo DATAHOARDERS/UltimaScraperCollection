@@ -3,10 +3,9 @@ from pathlib import Path
 from shutil import disk_usage
 from typing import TYPE_CHECKING, Any
 
-from ultima_scraper_api import user_types
-
-from ultima_scraper_collection.config import Directory, UltimaScraperCollectionConfig
 import ujson
+from ultima_scraper_api import user_types
+from ultima_scraper_collection.config import Directory, UltimaScraperCollectionConfig
 
 if TYPE_CHECKING:
     from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
@@ -26,12 +25,15 @@ def check_space(
             # Haven't tested if it calculates hard A or relative/symbolic B's total space.
             # size is in GB
             assert directory.path
-            obj_Disk = disk_usage(str(directory.path.parent))
+            if directory.path.exists() == False:
+                continue
+            obj_Disk = disk_usage(str(directory.path))
             free = obj_Disk.free / (1024.0**3)
-            x = {}
+            x: dict[str, Any] = {}
             x["path"] = directory.path
             x["free"] = free
             x["min_space"] = directory.minimum_space
+            x["overflow"] = directory.overflow
             paths.append(x)
         for item in paths:
             download_path = item["path"]
@@ -39,6 +41,12 @@ def check_space(
             if free > item["min_space"]:
                 root = download_path
                 break
+        if not root:
+            paths.sort(key=lambda x: x["free"], reverse=True)
+            for item in paths:
+                if item["overflow"]:
+                    root = item["path"]
+                    break
     return root
 
 
