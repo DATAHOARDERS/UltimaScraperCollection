@@ -8,7 +8,10 @@ from ultima_scraper_db.databases.ultima_archive.schemas.management import (
     ServerModel,
     SiteModel,
 )
-from ultima_scraper_db.managers.database_manager import Database, Schema
+from ultima_scraper_db.managers.database_manager import Schema
+from ultima_scraper_db.databases.ultima_archive.schemas.management import (
+    get_default_sites,
+)
 
 
 def create_socket(socket_type: socket.SocketKind = socket.SOCK_DGRAM):
@@ -52,11 +55,8 @@ class ServerManager:
             self.reset = False
             if not db_sites:
                 # Need to add a create or update for additional sites
-                from ultima_scraper_db.databases.ultima_archive.schemas.management import (
-                    default_sites,
-                )
 
-                for site in default_sites:
+                for site in get_default_sites():
                     session.add(site)
                 await session.commit()
                 db_sites = await session.scalars(select(SiteModel))
