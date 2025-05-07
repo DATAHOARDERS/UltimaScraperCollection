@@ -16,6 +16,7 @@ from ultima_scraper_collection.managers.database_manager.connections.sqlite.mode
 from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     MediaMetadata,
+    invalid_subdomains,
 )
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     MediaModel,
@@ -241,11 +242,10 @@ class DownloadManager:
                 pass
             assert db_media
             await db_media.awaitable_attrs.content_media_assos
-            matches = ["us", "uk", "ca", "ca2", "de", "sg"]
             p_url = urlparse(download_item.urls[0])
             assert p_url.hostname
             subdomain = p_url.hostname.split(".")[0]
-            if any(subdomain in nm for nm in matches):
+            if any(subdomain in nm for nm in invalid_subdomains):
                 return
 
             authed = self.authed

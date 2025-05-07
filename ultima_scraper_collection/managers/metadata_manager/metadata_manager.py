@@ -36,6 +36,7 @@ from ultima_scraper_db.databases.ultima_archive.site_api import content_model_ty
 api_types = ultima_scraper_api.api_types
 user_types = ultima_scraper_api.user_types
 content_types = ultima_scraper_api.content_types
+invalid_subdomains = ["us", "uk", "ca", "ca2", "de", "sg"]
 
 
 class DBContentExtractor:
@@ -227,12 +228,11 @@ class ApiExtractor:
             if authed.drm:
                 new_asset.drm = bool(authed.drm.has_drm(asset_metadata))
             new_asset.urls = []
-            matches = ["us", "uk", "ca", "ca2", "de"]
             for url in [main_url, preview_url].copy():
                 if url:
                     if url.hostname:
                         subdomain = url.hostname.split(".")[1]
-                        if any(subdomain in nm for nm in matches):
+                        if any(subdomain in nm for nm in invalid_subdomains):
                             subdomain = url.hostname.split(".")[1]
                             if "upload" in subdomain:
                                 continue
@@ -385,13 +385,12 @@ class MediaMetadata:
         self.drm = bool(author.get_authed().drm.has_drm(raw_media))
         main_url = self.url_picker(raw_media)
         preview_url = self.preview_url_picker(raw_media)
-        matches = ["us", "uk", "ca", "ca2", "de"]
         self.urls = []
         for url in [main_url, preview_url].copy():
             if url:
                 if url.hostname:
                     subdomain = url.hostname.split(".")[1]
-                    if any(subdomain in nm for nm in matches):
+                    if any(subdomain in nm for nm in invalid_subdomains):
                         subdomain = url.hostname.split(".")[1]
                         if "upload" in subdomain:
                             continue

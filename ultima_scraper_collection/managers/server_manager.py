@@ -11,35 +11,39 @@ from ultima_scraper_db.databases.ultima_archive.schemas.management import (
 from ultima_scraper_db.managers.database_manager import Database, Schema
 
 
+def create_socket(socket_type: socket.SocketKind = socket.SOCK_DGRAM):
+    temp_socket = socket.socket(socket.AF_INET, socket_type)
+    temp_socket.connect(("8.8.8.8", 80))  # Connecting to Google's DNS server
+    return temp_socket
+
+
+def get_local_ip():
+    # Create a temporary connection to a remote server to retrieve the local IP address
+    temp_socket = create_socket()
+    local_ip = temp_socket.getsockname()[0]
+    temp_socket.close()
+    return local_ip
+
+
+def mac_for_ip(ip: str) -> str | None:
+    "Returns a list of MACs for interfaces that have given IP, returns None if not found"
+    for i in netifaces.interfaces():  # type: ignore
+        addrs = netifaces.ifaddresses(i)  # type: ignore
+        try:
+            if_mac: str | None = addrs[netifaces.AF_LINK][0]["addr"]  # type: ignore
+            if_ip: str | None = addrs[netifaces.AF_INET][0]["addr"]  # type: ignore
+        except (IndexError, KeyError):  # ignore ifaces that dont have MAC or IP
+            if_mac = if_ip = None
+        if if_ip == ip:
+            return if_mac  # type: ignore
+    return None
+
+
 class ServerManager:
     def __init__(self, ultima_archive_db_api: ArchiveAPI) -> None:
         self.ultima_archive_db_api = ultima_archive_db_api
 
-    async def init(self, database: Database):
-        def create_socket(socket_type: socket.SocketKind = socket.SOCK_DGRAM):
-            temp_socket = socket.socket(socket.AF_INET, socket_type)
-            temp_socket.connect(("8.8.8.8", 80))  # Connecting to Google's DNS server
-            return temp_socket
-
-        def get_local_ip():
-            # Create a temporary connection to a remote server to retrieve the local IP address
-            temp_socket = create_socket()
-            local_ip = temp_socket.getsockname()[0]
-            temp_socket.close()
-            return local_ip
-
-        def mac_for_ip(ip: str) -> str | None:
-            "Returns a list of MACs for interfaces that have given IP, returns None if not found"
-            for i in netifaces.interfaces():  # type: ignore
-                addrs = netifaces.ifaddresses(i)  # type: ignore
-                try:
-                    if_mac: str | None = addrs[netifaces.AF_LINK][0]["addr"]  # type: ignore
-                    if_ip: str | None = addrs[netifaces.AF_INET][0]["addr"]  # type: ignore
-                except (IndexError, KeyError):  # ignore ifaces that dont have MAC or IP
-                    if_mac = if_ip = None
-                if if_ip == ip:
-                    return if_mac  # type: ignore
-            return None
+    async def init(self):
 
         async with self.ultima_archive_db_api.create_management_api() as management_api:
             session = management_api.get_session()
