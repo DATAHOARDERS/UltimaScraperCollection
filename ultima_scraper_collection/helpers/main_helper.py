@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import ujson
 from ultima_scraper_api import user_types
+
 from ultima_scraper_collection.config import Directory, UltimaScraperCollectionConfig
 
 if TYPE_CHECKING:
@@ -50,9 +51,7 @@ def check_space(
     return root
 
 
-from ultima_scraper_api.apis.onlyfans.classes.user_model import (
-    create_user as OFUserModel,
-)
+from ultima_scraper_api.apis.onlyfans.classes.user_model import UserModel as OFUserModel
 
 
 async def is_valuable(user: "DBUserModel | user_types"):

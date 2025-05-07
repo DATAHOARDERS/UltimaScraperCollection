@@ -7,6 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.apis.onlyfans.onlyfans import OnlyFansAPI
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import PostModel
+from ultima_scraper_renamer.reformat import ReformatManager
+
 from ultima_scraper_collection.config import Sites
 from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
     ApiExtractor,
@@ -15,18 +18,16 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
 from ultima_scraper_collection.managers.option_manager import OptionManager
 from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_collection.modules.module_streamliner import StreamlinedDatascraper
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import PostModel
-from ultima_scraper_renamer.reformat import ReformatManager
 
 if TYPE_CHECKING:
     from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
     from ultima_scraper_api.apis.onlyfans.classes.hightlight_model import (
-        create_highlight,
+        HighlightModel,
     )
-    from ultima_scraper_api.apis.onlyfans.classes.message_model import create_message
-    from ultima_scraper_api.apis.onlyfans.classes.post_model import create_post
-    from ultima_scraper_api.apis.onlyfans.classes.story_model import create_story
-    from ultima_scraper_api.apis.onlyfans.classes.user_model import create_user
+    from ultima_scraper_api.apis.onlyfans.classes.message_model import MessageModel
+    from ultima_scraper_api.apis.onlyfans.classes.post_model import PostModel
+    from ultima_scraper_api.apis.onlyfans.classes.story_model import StoryModel
+    from ultima_scraper_api.apis.onlyfans.classes.user_model import UserModel
 
 
 class OnlyFansDataScraper(StreamlinedDatascraper):
@@ -45,8 +46,8 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
     # Scrapes the API for content
     async def media_scraper(
         self,
-        content_result: "create_story | create_post | create_message|MassMessageModel",
-        subscription: "create_user",
+        content_result: "StoryModel | PostModel | MessageModel|MassMessageModel",
+        subscription: "UserModel",
         api_type: str,
     ) -> dict[str, Any]:
         api_type = self.api.convert_api_type_to_key(content_result)
@@ -60,7 +61,6 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             pass
         if api_type == "Messages":
             pass
-
         content_metadata = ContentMetadata(
             content_result.id, api_type, self.resolve_content_manager(subscription)
         )
@@ -95,23 +95,23 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
             pass
         return new_set
 
-    async def get_all_stories(self, subscription: "create_user"):
+    async def get_all_stories(self, subscription: "UserModel"):
         """
-        get_all_stories(subscription: create_user)
+        get_all_stories(subscription: UserModel)
 
         This function returns a list of all stories and highlights from the given subscription.
 
         Arguments:
-        subscription (create_user): An instance of the create_user class.
+        subscription (UserModel): An instance of the UserModel class.
 
         Returns:
-        list[create_highlight | create_story]: A list containing all stories and highlights from the subscription.
+        list[create_highlight | StoryModel]: A list containing all stories and highlights from the subscription.
         """
-        master_set: list[create_highlight | create_story] = []
+        master_set: list[HighlightModel | StoryModel] = []
         master_set.extend(await subscription.get_stories())
         master_set.extend(await subscription.get_archived_stories())
         highlights = await subscription.get_highlights()
-        valid_highlights: list[create_highlight | create_story] = []
+        valid_highlights: list[HighlightModel | StoryModel] = []
         for highlight in highlights:
             resolved_highlight = await subscription.get_highlights(
                 hightlight_id=highlight.id
@@ -120,7 +120,7 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
         master_set.extend(valid_highlights)
         return master_set
 
-    async def get_all_posts(self, performer: "create_user") -> list["create_post"]:
+    async def get_all_posts(self, performer: "UserModel") -> list["PostModel"]:
         async with self.get_archive_db_api().create_site_api(
             performer.get_api().site_name
         ) as db_site_api:
@@ -160,7 +160,9 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
                 for x in performer.scrape_manager.scraped.Posts.values()
                 if x.created_at > threshold_date
             ]
-            await asyncio.gather(*tasks)
+            if len(tasks) > 800:
+                tasks = tasks[: len(tasks) // 4]
+            # await asyncio.gather(*tasks)
             return posts + archived_posts + private_archived_posts
 
     async def get_all_subscriptions(

@@ -3808,14 +3808,14 @@ files = [
 
 [[package]]
 name = "ultima-scraper-api"
-version = "2.2.36"
+version = "2.2.37"
 description = ""
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main"]
 files = [
-    {file = "ultima_scraper_api-2.2.36-py3-none-any.whl", hash = "sha256:c42a00f8732c31afed7a05eb390862ed868df9fa5dd7485bd36178f1124c9ab8"},
-    {file = "ultima_scraper_api-2.2.36.tar.gz", hash = "sha256:7319b6d2ad6dc516c9e9f1e7fadff903457b88a1f5595162a04b6179aae2ffa1"},
+    {file = "ultima_scraper_api-2.2.37-py3-none-any.whl", hash = "sha256:0a0fe6fe3a913174e7592ac14f86bd55a93bf1cd52ca53660b689ae646199a11"},
+    {file = "ultima_scraper_api-2.2.37.tar.gz", hash = "sha256:3b90c320be122ee568f098f76a2f36650f49118b1618a5f9f33dcb73623a9891"},
 ]
 
 [package.dependencies]
@@ -3845,14 +3845,14 @@ dev = ["Sphinx (>=5.3.0)", "black (>=23.3.0)", "python-semantic-release (>=7.33.
 
 [[package]]
 name = "ultima-scraper-db"
-version = "0.4.11"
+version = "0.4.12"
 description = ""
 optional = false
 python-versions = "<4,>=3.10"
 groups = ["main"]
 files = [
-    {file = "ultima_scraper_db-0.4.11-py3-none-any.whl", hash = "sha256:34db0d2b49726cc1c466722b5af27d88cf0c431099465054aee48f90da29f228"},
-    {file = "ultima_scraper_db-0.4.11.tar.gz", hash = "sha256:4a4ffd5ceac3f101748663d385a2621c66cd3f3930779d33d252d56c2cea221f"},
+    {file = "ultima_scraper_db-0.4.12-py3-none-any.whl", hash = "sha256:555f61da3d340a201913d37606407a44862a3b3d238e2d49c8f5ef73d530e24e"},
+    {file = "ultima_scraper_db-0.4.12.tar.gz", hash = "sha256:9b8760709b5d8e10c474f944edc533ea434a8103cd4d79488a2dbcb7f62f16d7"},
 ]
 
 [package.dependencies]

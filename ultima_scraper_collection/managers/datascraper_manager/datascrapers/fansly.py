@@ -15,10 +15,10 @@ from ultima_scraper_collection.modules.module_streamliner import StreamlinedData
 
 if TYPE_CHECKING:
     from ultima_scraper_api.apis.fansly.classes.auth_model import AuthModel
-    from ultima_scraper_api.apis.fansly.classes.message_model import create_message
-    from ultima_scraper_api.apis.fansly.classes.post_model import create_post
-    from ultima_scraper_api.apis.fansly.classes.story_model import create_story
-    from ultima_scraper_api.apis.fansly.classes.user_model import create_user
+    from ultima_scraper_api.apis.fansly.classes.message_model import MessageModel
+    from ultima_scraper_api.apis.fansly.classes.post_model import PostModel
+    from ultima_scraper_api.apis.fansly.classes.story_model import StoryModel
+    from ultima_scraper_api.apis.fansly.classes.user_model import UserModel
 
 
 class FanslyDataScraper(StreamlinedDatascraper):
@@ -37,8 +37,8 @@ class FanslyDataScraper(StreamlinedDatascraper):
     # Scrapes the API for content
     async def media_scraper(
         self,
-        content_result: "create_story | create_post | create_message",
-        subscription: "create_user",
+        content_result: "StoryModel | PostModel | MessageModel",
+        subscription: "UserModel",
         api_type: str,
     ) -> dict[str, Any]:
         authed = subscription.get_authed()
@@ -76,24 +76,24 @@ class FanslyDataScraper(StreamlinedDatascraper):
         new_set["directories"] = directories
         return new_set
 
-    async def get_all_stories(self, subscription: "create_user"):
+    async def get_all_stories(self, subscription: "UserModel"):
         """
-        get_all_stories(subscription: create_user)
+        get_all_stories(subscription: UserModel)
 
         This function returns a list of all stories and archived stories from the given subscription.
 
         Arguments:
-        subscription (create_user): An instance of the create_user class.
+        subscription (UserModel): An instance of the UserModel class.
 
         Returns:
-        list[create_story]: A list containing all stories and archived stories from the subscription.
+        list[StoryModel]: A list containing all stories and archived stories from the subscription.
         """
-        master_set: list["create_story"] = []
+        master_set: list["StoryModel"] = []
         master_set.extend(await subscription.get_stories())
         # master_set.extend(await subscription.get_archived_stories())
         return master_set
 
-    async def get_all_posts(self, subscription: "create_user"):
+    async def get_all_posts(self, subscription: "UserModel"):
         temp_master_set = await subscription.get_posts()
         collections = await subscription.get_collections()
         for collection in collections:

@@ -9,21 +9,9 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import joinedload
 from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
 from ultima_scraper_api.apis.onlyfans.classes.user_model import (
-    create_user as OnlyFansUserModel,
+    UserModel as OnlyFansUserModel,
 )
 from ultima_scraper_api.helpers.main_helper import ProgressBar
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -38,6 +26,19 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     UserModel as DBUserModel,
 )
 from ultima_scraper_renamer.reformat import ReformatManager
+
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
 
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
@@ -189,7 +190,7 @@ class StreamlinedDatascraper:
                                 performer.scrape_whitelist.clear()
                                 valid_user_list.add(performer)
         from ultima_scraper_api.apis.fansly.classes.user_model import (
-            create_user as FYUserModel,
+            UserModel as FYUserModel,
         )
 
         for user in valid_user_list:
@@ -359,7 +360,7 @@ class StreamlinedDatascraper:
                 case _:
                     raise Exception(f"{content_type} is an invalid choice")
         # Adding paid content and removing duplicates by id
-        if isinstance(user, ultima_scraper_api.onlyfans_classes.user_model.create_user):
+        if isinstance(user, ultima_scraper_api.onlyfans_classes.user_model.UserModel):
             for paid_content in await user.get_paid_contents(content_type):
                 temp_master_set.append(paid_content)
             pass
@@ -569,7 +570,7 @@ class StreamlinedDatascraper:
                         performer_id=db_performer.id
                     )
         if isinstance(
-            performer, ultima_scraper_api.onlyfans_classes.user_model.create_user
+            performer, ultima_scraper_api.onlyfans_classes.user_model.UserModel
         ):
             if performer.is_blocked:
                 await performer.unblock()
