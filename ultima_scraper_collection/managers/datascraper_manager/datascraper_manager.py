@@ -15,12 +15,17 @@ from ultima_scraper_collection.managers.server_manager import ServerManager
 
 class DataScraperManager:
     def __init__(
-        self, server_manager: ServerManager, config: UltimaScraperCollectionConfig
+        self,
+        server_manager: ServerManager,
+        config: UltimaScraperCollectionConfig,
+        worker_id: int = 0,
     ) -> None:
         self.datascrapers: dict[str, datascraper_types] = {}
         self.server_manager: ServerManager = server_manager
         self.config = config
         for site_name in SUPPORTED_SITES:
+            if "LoyalFans" == site_name:
+                continue
             datascraper = self.add_datascraper(
                 ultima_scraper_api.select_api(site_name, config),
                 OptionManager(),
@@ -29,6 +34,7 @@ class DataScraperManager:
             datascraper.filesystem_manager.activate_directory_manager(
                 self.get_site_config(site_name)
             )
+            datascraper.worker_id = worker_id
 
     def get_site_config(self, name: str):
         return getattr(self.config.site_apis, name.lower())

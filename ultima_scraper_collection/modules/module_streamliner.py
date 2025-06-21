@@ -5,6 +5,13 @@ import copy
 from typing import Any
 
 import ultima_scraper_api
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import joinedload
 from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
@@ -12,6 +19,18 @@ from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     UserModel as OnlyFansUserModel,
 )
 from ultima_scraper_api.helpers.main_helper import ProgressBar
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -27,19 +46,6 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
 )
 from ultima_scraper_renamer.reformat import ReformatManager
 
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
-
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
 message_types = ultima_scraper_api.message_types
@@ -48,6 +54,7 @@ subscription_types = ultima_scraper_api.subscription_types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from dashboard import WorkerDashboardApp
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
         FanslyDataScraper,
     )
@@ -114,6 +121,8 @@ class StreamlinedDatascraper:
         self.server_manager: ServerManager = server_manager
         self.content_managers: dict[int, ContentManager] = {}
         self.media_managers: dict[int, MediaManager] = {}
+        self.dashboard: "WorkerDashboardApp | None" = None
+        self.worker_id: int = 0
 
     def find_metadata_manager(self, user_id: int):
         return self.metadata_manager_users[user_id]
@@ -167,7 +176,8 @@ class StreamlinedDatascraper:
             [
                 user.scrape_whitelist.append("Messages")
                 for user in chat_users
-                if not user.is_subscribed() or not scraping_subscriptions
+                if not user.is_user_subscribed_to_performer()
+                or not scraping_subscriptions
             ]
             [valid_user_list.add(x) for x in chat_users]
 
@@ -388,9 +398,23 @@ class StreamlinedDatascraper:
             )
             for x in master_set
         ]
-        unrefined_set: list[dict[str, Any]] = await ProgressBar(
-            f"Processing Scraped {api_type}"
-        ).gather(tasks)
+        dashboard = self.dashboard
+        assert dashboard
+        total = len(tasks)
+        completed = 0
+        worker = dashboard.get_worker(self.worker_id)
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            unrefined_set.append(result)
+            completed += 1
+            # Update dashboard scraping progress
+            dashboard.set_scrape_task(
+                self.worker_id,
+                (completed / total) * 100,
+                f"{subscription.username} | {api_type} ({completed}/{total})",
+            )
+            await asyncio.sleep(0)
+
         new_metadata = metadata_manager.merge_content_and_directories(unrefined_set)
         final_content, _final_directories = new_metadata
         if new_metadata:
@@ -401,6 +425,10 @@ class StreamlinedDatascraper:
                 pass
         else:
             print(f"No {api_type} found.")
+        # Mark as done in dashboard
+        dashboard.set_scrape_task(
+            self.worker_id, 100, f"{subscription.username} | {api_type} (Done)"
+        )
         return True
 
     # Downloads scraped content
@@ -459,17 +487,20 @@ class StreamlinedDatascraper:
             pass
         download_media_count = len(non_downloaded)
         directory = performer_directory_manager.user.download_directory
-        if final_download_set:
-            string = "Processing Download:\n"
-            string += f"Name: {performer.username} | Type: {api_type} | Downloading: {download_media_count} | Total: {total_media_count} | Directory: {directory}\n"
-            print(string)
         download_manager = DownloadManager(
             performer.get_authed(),
             filesystem_manager,
             final_download_set,
             global_settings.tools.reformatter.active,
+            self.dashboard,
+            self.datascraper.worker_id,
         )
-        await download_manager.bulk_download()
+        status = await download_manager.bulk_download(
+            performer,
+            api_type,
+            download_media_count,
+            total_media_count,
+        )
         await site_db_api.schema.session.commit()
         if current_job:
             current_job.done = True
@@ -565,7 +596,7 @@ class StreamlinedDatascraper:
                         performer.is_deleted = True
             else:
                 performer = subscriptions[0].user
-                if not performer.is_subscribed():
+                if not performer.is_user_subscribed_to_performer():
                     paid_contents = await authed.get_paid_content(
                         performer_id=db_performer.id
                     )

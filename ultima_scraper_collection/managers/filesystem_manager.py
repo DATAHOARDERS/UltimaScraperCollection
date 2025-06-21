@@ -85,49 +85,58 @@ class FilesystemManager:
         self,
         response: ClientResponse,
         download_path: Path,
-        callback: Any = None,
-        buffer_size: int = 64 * 1024 * 1024,  # 512MB buffer
+        callback: any = None,
+        buffer_size: int = 64 * 1024 * 1024,  # 64MB buffer
     ):
         status_code = None
-        if response.status == 200:
-            total_length = 0
-            os.makedirs(os.path.dirname(download_path), exist_ok=True)
+        temp_download_path = Path(f"{download_path}.part")
+        os.makedirs(os.path.dirname(download_path), exist_ok=True)
 
-            async with aiofiles.open(f"{download_path}.part", mode="wb") as f:
-                buffer = bytearray()  # Buffer to hold chunks before writing to disk
+        existing_size = (
+            temp_download_path.stat().st_size if temp_download_path.exists() else 0
+        )
+        total_length = existing_size
+        expected_total_size = existing_size + (response.content_length or 0)
+
+        if response.status in (200, 206):
+            # Open in append-binary mode if resuming
+            async with aiofiles.open(temp_download_path, mode="ab") as f:
+                buffer = bytearray()
+
                 try:
-                    async for data in response.content.iter_chunked(
-                        65536
-                    ):  # 64KB chunks from network
-                        buffer.extend(data)  # Add chunk to buffer
+                    async for data in response.content.iter_chunked(65536):
+                        buffer.extend(data)
                         length = len(data)
                         total_length += length
 
                         if len(buffer) >= buffer_size:
                             await f.write(buffer)
-                            buffer.clear()  # Clear buffer after writing
+                            buffer.clear()
 
                         if callback:
                             callback(length)
+
                 except EXCEPTION_TEMPLATE as _e:
                     status_code = 1
                 except Exception as _e:
                     raise Exception(f"Unknown Error: {_e}")
                 else:
                     if status_code:
-                        await aiofiles.os.remove(f"{download_path}.part")
+                        await aiofiles.os.remove(str(temp_download_path))
                     else:
                         try:
-                            if buffer:  # Write any remaining buffered data
+                            if buffer:
                                 await f.write(buffer)
+                            if total_length != expected_total_size:
+                                status_code = 1
+                                await aiofiles.os.remove(str(temp_download_path))
+                                return status_code
                             await aiofiles.os.rename(
-                                f"{download_path}.part", download_path
+                                str(temp_download_path), str(download_path)
                             )
                         except OSError as _e:
                             raise Exception(f"File rename failed: {_e}")
         else:
-            if response.content_length:
-                pass
             status_code = 2
         return status_code
 
@@ -509,6 +518,12 @@ class FileManager:
         unique: set[Path] = set()
         await self.refresh_files()
         for valid_file in self.find_string_in_path("__drm__"):
+            self.delete_path(valid_file)
+            unique.add(valid_file.parent)
+        for valid_file in self.find_string_in_path("__parts__"):
+            self.delete_path(valid_file)
+            unique.add(valid_file.parent)
+        for valid_file in self.find_string_in_path("parts"):
             self.delete_path(valid_file)
             unique.add(valid_file.parent)
         for unique_file in unique:

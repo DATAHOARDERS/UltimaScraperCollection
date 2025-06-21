@@ -69,6 +69,7 @@ class SSHConnection(BaseModel):
     private_key_password: str | None = None
     host: str | None = None
     port: int = 22
+    active: bool = False
 
 
 class DatabaseInfo(BaseModel):
@@ -142,12 +143,30 @@ class UltimaScraperCollectionConfig(UltimaScraperAPIConfig):
     settings: Settings = Settings()
     site_apis: Sites = Sites()
 
-    def load_default_config(self):
+    @classmethod
+    def get_config_path(cls):
         config_dir = user_config_dir("ultima_scraper_verse")  # type: ignore
-        config_path = Path(config_dir) / "config.json"  # type: ignore
+        return Path(config_dir) / "config.json"  # type: ignore
 
+    @classmethod
+    def load_or_create_default_config(cls):
+        try:
+            return cls.load_default_config()
+        except Exception:
+            config = cls()
+            config.save_config()
+            return config
+
+    @classmethod
+    def load_default_config(cls):
+        config_path = cls.get_config_path()
         config_json = ujson.loads(config_path.read_text())
-        return UltimaScraperCollectionConfig(**config_json)
+        return cls(**config_json)
+
+    def save_config(self):
+        config_path = self.get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(self.model_dump_json(indent=2))
 
     def get_site_config(self, site_name: str):
         return getattr(self.site_apis, site_name.lower())

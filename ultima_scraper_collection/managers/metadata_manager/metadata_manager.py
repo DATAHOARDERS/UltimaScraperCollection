@@ -194,6 +194,13 @@ class ApiExtractor:
             if "mimetype" in asset_metadata:
                 raw_media_type: str = asset_metadata["mimetype"].split("/")[0]
             author = self.item.get_author()
+            if not raw_media_type:
+                if ".stream" in asset_metadata["files"]["full"]["url"]:
+                    continue
+                else:
+                    print(
+                        f"Authed: {author.username} - {self.item.__class__.__name__} - {self.item.id} - {raw_media_type}"
+                    )
             media_type = author.get_api().MediaTypes().find_by_value(raw_media_type)
             if "createdAt" in asset_metadata:
                 if isinstance(asset_metadata["createdAt"], str):
