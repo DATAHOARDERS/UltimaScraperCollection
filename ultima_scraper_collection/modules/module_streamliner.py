@@ -448,13 +448,22 @@ class StreamlinedDatascraper:
         content_manager = self.resolve_content_manager(performer)
         db_medias = db_performer.content_manager.get_media_manager().medias
         final_download_set: set[MediaMetadata] = set()
+        media_index = content_manager.build_media_index(api_type)
         for db_media in db_medias.values():
             content_info = None
             if api_type == "Uncategorized":
                 media_metadata = content_manager.media_manager.medias.get(db_media.id)
             else:
-                media_metadata = content_manager.find_media(
-                    category=api_type, media_id=db_media.id
+                media_list = media_index.get(db_media.id)
+                if not media_list:
+                    continue
+                media_metadata = max(
+                    media_list,
+                    key=lambda m: (
+                        m.get_content_metadata().paid is not None,
+                        m.get_content_metadata().paid,
+                    ),
+                    default=None,
                 )
             if not media_metadata:
                 continue

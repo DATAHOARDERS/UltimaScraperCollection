@@ -387,6 +387,24 @@ class FilesystemManager:
         )
         return directory_manager
 
+    async def performer_directory(self, site_name: str, usernames: list[str]):
+        found_performer_directory = None
+        for username in usernames:
+            assert self.directory_manager
+            download_directories = (
+                self.directory_manager.site_config.download_setup.directories
+            )
+            for download_directory in download_directories:
+                assert download_directory.path
+                site_directory = download_directory.path.joinpath(site_name)
+                performer_directory = site_directory.joinpath(
+                    username[0].capitalize()
+                ).joinpath(username)
+                if performer_directory.exists():
+                    found_performer_directory = performer_directory
+                    break
+        return found_performer_directory
+
 
 class DirectoryManager:
     def __init__(

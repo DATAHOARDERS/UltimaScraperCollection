@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ultima-scraper-collection"
-version = "2.3.29"
+version = "2.3.30"
 description = ""
 authors = ["UltimaHoarder <1285176+UltimaHoarder@users.noreply.github.com>"]
 packages = [{ include = "ultima_scraper_collection" }]

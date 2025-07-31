@@ -157,13 +157,14 @@ class OnlyFansDataScraper(StreamlinedDatascraper):
                 if latest_post_dates
                 else datetime.min.replace(tzinfo=timezone.utc)
             )
-            tasks = [
-                x.get_comments()
+            posts_to_scrape = [
+                x
                 for x in performer.scrape_manager.scraped.Posts.values()
                 if x.created_at > threshold_date
             ]
-            if len(tasks) > 800:
-                tasks = tasks[: len(tasks) // 4]
+            if len(posts_to_scrape) > 800:
+                posts_to_scrape = posts_to_scrape[: len(posts_to_scrape) // 4]
+            # tasks = [x.get_comments() for x in posts_to_scrape]
             # await asyncio.gather(*tasks)
             return posts + archived_posts + private_archived_posts
 

@@ -48,6 +48,14 @@ class ContentManager:
             pass
         return found_content
 
+    def build_media_index(self, category: str) -> dict[int, Any]:
+        content_items = getattr(self.categorized, category)
+        media_index = {}
+        for content in content_items.values():
+            for media in content.medias:
+                media_index.setdefault(media.id, []).append(media)
+        return media_index
+
     def find_media(self, category: str, media_id: int):
         content_items = getattr(self.categorized, category)
         medias = []

@@ -23,12 +23,6 @@ from ultima_scraper_api import auth_types
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MediaModel,
-    MessageModel,
-)
-from ultima_scraper_renamer.reformat import ReformatManager
-
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -38,6 +32,11 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     invalid_subdomains,
 )
 from ultima_scraper_collection.managers.resource_manager import ResourceManager
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MediaModel,
+    MessageModel,
+)
+from ultima_scraper_renamer.reformat import ReformatManager
 
 if TYPE_CHECKING:
     from dashboard import WorkerDashboardApp
@@ -154,32 +153,34 @@ class DownloadItem:
         return self.drm_media_items
 
     async def _head_request(self):
-        parsed_url = urlparse(self.media_item.urls[0])
-        main_url = parsed_url.geturl()
-        assert parsed_url.hostname
-        subdomain = parsed_url.hostname.split(".")[0]
-        if any(
-            subdomain in invalid_subdomain for invalid_subdomain in invalid_subdomains
-        ):
-            return False
-        if self.drm:
-            drm = self.authed.drm
-            assert drm
-            signature_str = await drm.get_signature(self.media_item.__raw__)
-            abc = await self.authed.auth_session.request(
-                main_url,
-                "HEAD",
-                premade_settings="",
-                custom_cookies=signature_str,
-            )
-            pass
-        else:
-            abc = await self.authed.auth_session.request(main_url, "HEAD")
-        self.head_request = abc
-        if abc.status == 200:
-            return self.head_request
-        else:
-            return False
+        async with self.download_manager.semaphore2:
+            parsed_url = urlparse(self.media_item.urls[0])
+            main_url = parsed_url.geturl()
+            assert parsed_url.hostname
+            subdomain = parsed_url.hostname.split(".")[0]
+            if any(
+                subdomain in invalid_subdomain
+                for invalid_subdomain in invalid_subdomains
+            ):
+                return False
+            if self.drm:
+                drm = self.authed.drm
+                assert drm
+                signature_str = await drm.get_signature(self.media_item.__raw__)
+                abc = await self.authed.auth_session.request(
+                    main_url,
+                    "HEAD",
+                    premade_settings="",
+                    custom_cookies=signature_str,
+                )
+                pass
+            else:
+                abc = await self.authed.auth_session.request(main_url, "HEAD")
+            self.head_request = abc
+            if abc.status == 200:
+                return self.head_request
+            else:
+                return False
 
     async def download_part(
         self,
@@ -434,6 +435,7 @@ class DownloadManager:
         self.total = 0
         self.completed = 0
         self.semaphore = asyncio.Semaphore(64)
+        self.semaphore2 = asyncio.Semaphore(64)
 
     async def increase_completed(self):
         self.completed += 1
