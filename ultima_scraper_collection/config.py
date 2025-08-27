@@ -136,6 +136,8 @@ class UltimaScraperCollectionConfig(UltimaScraperAPIConfig):
         trash: Trash = Trash()
         infinite_loop: bool = False
         exit_on_completion: bool = True
+        previews_directory: Path | None = None
+        subtitles_directory: Path | None = None
 
         def get_main_database(self):
             return [x for x in self.databases if x.main][0]
