@@ -1,6 +1,7 @@
 import asyncio
 import os
 import socket
+import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Coroutine
@@ -181,12 +182,17 @@ class RedisQueueBackend(QueueBackendInterface):
         group_name: str = "processors",
         maxlen: int = 10000,
     ):
+        # Connection and stream configuration
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.stream_prefix = stream_prefix
         self.group_name = group_name
         self.maxlen = maxlen
+        # Client and consumer identity
         self._redis: Redis | None = None
-        self._consumer_name = f"{socket.gethostname()}-{os.getpid()}"
+        self._consumer_name = (
+            f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+        )
+        print(f"DEBUG: Created consumer {self._consumer_name}")
 
     def _get_stream_name(self, queue_name: str) -> str:
         """Generate a proper stream name from queue name"""
@@ -253,22 +259,10 @@ class RedisQueueBackend(QueueBackendInterface):
             if "BUSYGROUP" not in str(e):
                 raise
 
-        semaphore = asyncio.Semaphore(prefetch_count or 1)
-
-        async def _process_message(msg_id: str, data: dict[str, Any]):
-            async with semaphore:
-                try:
-
-                    message = RedisMessage(data, msg_id)
-                    await callback(message, *args)
-
-                    # Acknowledge and delete message on success
-                    await self._redis.xack(stream_name, self.group_name, msg_id)
-                    await self._redis.xdel(stream_name, msg_id)
-
-                except Exception as e:
-                    print(f"Error processing message {msg_id}: {e}")
-                    # Leave in PEL for inspection
+        # Sequential processing: one in-flight job at a time per consumer.
+        # Respect prefetch_count by limiting how many are fetched in a single read,
+        # but still process them one-by-one synchronously to avoid building up PEL.
+        read_count = max(1, prefetch_count or 1)
 
         # Main consumer loop
         while True:
@@ -277,7 +271,7 @@ class RedisQueueBackend(QueueBackendInterface):
                     self.group_name,
                     self._consumer_name,
                     streams={stream_name: ">"},
-                    count=10,
+                    count=read_count,
                     block=5000,
                 )
 
@@ -295,7 +289,20 @@ class RedisQueueBackend(QueueBackendInterface):
                         msg_id_str = (
                             msg_id.decode() if isinstance(msg_id, bytes) else msg_id
                         )
-                        asyncio.create_task(_process_message(msg_id_str, data))
+
+                        try:
+                            # Process inline to ensure single active job per consumer
+                            message = RedisMessage(data, msg_id_str)
+                            await callback(message, *args)
+
+                            # Acknowledge and delete message on success
+                            await self._redis.xack(
+                                stream_name, self.group_name, msg_id_str
+                            )
+                            await self._redis.xdel(stream_name, msg_id_str)
+                        except Exception as e:
+                            print(f"Error processing message {msg_id_str}: {e}")
+                            # Leave in PEL for retry/inspection
 
             except Exception as e:
                 print(f"Error in consumer loop for {stream_name}: {e}")
