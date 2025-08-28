@@ -155,10 +155,6 @@ class QueueBackendInterface(ABC):
         self,
         queue_name: str,
         message: dict[str, Any],
-        durable: bool = True,
-        priority: int | None = None,
-        unique_id: int | str | None = None,
-        headers: dict[str, Any] = {},
         print_error: bool = True,
         suppress: bool = False,
     ) -> bool:
@@ -321,20 +317,12 @@ class UltimaQueue:
         self,
         queue_name: str,
         message: dict[str, Any],
-        durable: bool = True,
-        priority: int | None = None,
-        unique_id: int | str | None = None,
-        headers: dict[str, Any] = {},
         print_error: bool = True,
         suppress: bool = False,
     ) -> bool:
         return await self._backend.publish_message(
             queue_name=queue_name,
             message=message,
-            durable=durable,
-            priority=priority,
-            unique_id=unique_id,
-            headers=headers,
             print_error=print_error,
             suppress=suppress,
         )
