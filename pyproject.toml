@@ -17,7 +17,6 @@ netifaces = "^0.11.0"
 sshtunnel = "^0.4.0"
 inflection = "^0.5.1"
 alive-progress = "^3.1.5"
-aio-pika = "^9.4.1"
 ujson = "^5.10.0"
 
 ultima-scraper-api = "^2.0"
@@ -26,6 +25,7 @@ ultima-scraper-db = "^0.4"
 ultima-scraper-detector = "^0.1"
 appdirs = "^1.4.4"
 rich = "^14.0.0"
+redis = "^6.4.0"
 
 [tool.poetry.group.dev.dependencies]
 python-semantic-release = "^7.33.2"

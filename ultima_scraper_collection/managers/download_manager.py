@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiofiles
+from aiohttp.client_exceptions import ClientConnectionError
 import ffmpeg
 import ultima_scraper_api
 from aiohttp import ClientResponse
@@ -23,6 +24,12 @@ from ultima_scraper_api import auth_types
 from ultima_scraper_api.apis.onlyfans.classes.mass_message_model import MassMessageModel
 from ultima_scraper_api.helpers import main_helper
 from ultima_scraper_api.managers.session_manager import EXCEPTION_TEMPLATE
+from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
+    MediaModel,
+    MessageModel,
+)
+from ultima_scraper_renamer.reformat import ReformatManager
+
 from ultima_scraper_collection.managers.database_manager.connections.sqlite.models.media_model import (
     TemplateMediaModel,
 )
@@ -32,11 +39,6 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
     invalid_subdomains,
 )
 from ultima_scraper_collection.managers.resource_manager import ResourceManager
-from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
-    MediaModel,
-    MessageModel,
-)
-from ultima_scraper_renamer.reformat import ReformatManager
 
 if TYPE_CHECKING:
     from dashboard import WorkerDashboardApp
@@ -99,9 +101,16 @@ class DownloadItem:
         assert reformat_manager.filesystem_manager.directory_manager
         site_config = reformat_manager.filesystem_manager.directory_manager.site_config
         drm = authed.drm
+        content_item = download_item.get_content_metadata()
         media_item = download_item.__raw__
         assert drm and media_item
-        mpd = await drm.get_mpd(media_item)
+        try:
+            mpd = await drm.get_mpd(media_item)
+        except ClientConnectionError as e:
+            assert content_item
+            # Log the MPD fetch error with traceback for debugging
+            print(f"Error fetching MPD for content {content_item.content_id}")
+            return
         pssh = await drm.get_pssh(mpd)
         # responses: list[ClientResponse] = []
 
@@ -188,7 +197,8 @@ class DownloadItem:
         start_byte: int,
         end_byte: int,
     ):
-        async with self.download_manager.semaphore:
+        domain_sem = self.download_manager.get_domain_semaphore(media_metadata.urls[0])
+        async with self.download_manager.semaphore, domain_sem:
             original_filepath = media_metadata.get_filepath()
             parts_folder = original_filepath.parent.joinpath("__parts__")
             os.makedirs(parts_folder, exist_ok=True)
@@ -436,6 +446,23 @@ class DownloadManager:
         self.completed = 0
         self.semaphore = asyncio.Semaphore(64)
         self.semaphore2 = asyncio.Semaphore(64)
+        # Per-domain concurrency fairness to prevent head-of-line blocking across domains
+        self._domain_semaphores = {}  # type: ignore[var-annotated]
+
+    def _domain_key(self, url: str) -> str:
+        try:
+            return urlparse(url).hostname or "unknown"
+        except Exception:
+            return "unknown"
+
+    def get_domain_semaphore(self, url: str) -> asyncio.Semaphore:
+        key = self._domain_key(url)
+        sem = self._domain_semaphores.get(key)
+        if sem is None:
+            # Default per-domain cap; tune as needed or expose via config
+            sem = asyncio.Semaphore(8)
+            self._domain_semaphores[key] = sem
+        return sem
 
     async def increase_completed(self):
         self.completed += 1

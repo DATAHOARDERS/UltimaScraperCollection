@@ -1,7 +1,46 @@
-from typing import Any, Callable, Coroutine
+import asyncio
+import os
+import socket
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Any, AsyncIterator, Callable, Coroutine
 
-import aio_pika
 import orjson
+from redis.asyncio import Redis
+
+
+def create_notification(
+    category: str,
+    site_name: str,
+    item: Any,
+) -> dict[str, Any]:
+    """Create a notification message for performers/users"""
+    json_message = {
+        "site_name": site_name,
+        "category": category,
+        "performer_id": item.id,
+        "username": item.username,
+    }
+    message = {"id": item.id, "data": json_message}
+    return message
+
+
+def create_message(
+    site_name: str, item: Any, mandatory_jobs: dict[str, dict[str, list[str]]]
+) -> dict[str, Any]:
+    """Create a job message for performers/users"""
+    json_message = {
+        "site_name": site_name,
+        "performer_id": item.id,
+        "username": item.username,
+        "mandatory_jobs": mandatory_jobs,
+    }
+    message = {"id": item.id, "data": json_message}
+    return message
+
+
+class QueueBackend(Enum):
+    REDIS = "redis"
 
 
 class MandatoryJob:
@@ -56,6 +95,8 @@ class StandardData:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StandardData":
+        data = data.copy()  # Don't modify the original
+        data.pop("queue", None)  # Remove queue field if present
         mandatory_jobs = [
             MandatoryJob.from_dict(x) for x in data.get("mandatory_jobs", [])
         ]
@@ -88,40 +129,105 @@ class StandardData:
         return mandatory_job
 
 
-class UltimaQueue:
-    def __init__(self, host: str = "localhost") -> None:
-        self.amqp_url = f"amqp://{host}"
-        self.connection = None
-        self.channel = None
+# Create a message-like object for compatibility
+class RedisMessage:
+    def __init__(self, body_data: dict[str, Any], msg_id: str):
+        self.body = orjson.dumps(body_data)
+        self.headers = body_data.get("_headers", {})
+        self._msg_id = msg_id
+        self._data = body_data
 
-    def get_connection(self):
-        assert self.connection is not None
-        return self.connection
+    async def ack(self):
+        pass  # Handled automatically after successful processing
 
-    def get_channel(self):
-        assert self.channel is not None
-        return self.channel
+    async def reject(self):
+        pass  # Could implement retry logic here
 
-    async def connect(self, prefetch_count: int = 0):
-        if self.connection and not self.connection.is_closed:
-            return
-        self.connection = await aio_pika.connect_robust(self.amqp_url)
-        self.channel = await self.connection.channel()
-        await self.channel.set_qos(prefetch_count=prefetch_count)
+    def get_data(self) -> dict[str, Any]:
+        return self._data
 
-    async def disconnect(self):
-        if self.connection:
-            await self.connection.close()
 
-    async def declare_queue(self, queue_name: str, durable: bool = True):
-        if not self.channel or self.channel.is_closed:
+class QueueBackendInterface(ABC):
+    """Abstract interface for queue backends"""
+
+    @abstractmethod
+    async def publish_message(
+        self,
+        queue_name: str,
+        message: dict[str, Any],
+        durable: bool = True,
+        priority: int | None = None,
+        unique_id: int | str | None = None,
+        headers: dict[str, Any] = {},
+        print_error: bool = True,
+        suppress: bool = False,
+    ) -> bool:
+        pass
+
+    @abstractmethod
+    async def consume_messages(
+        self,
+        queue_name: str,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
+    ) -> None:
+        pass
+
+
+class RedisQueueBackend(QueueBackendInterface):
+    """Redis Streams implementation of queue backend"""
+
+    def __init__(
+        self,
+        redis_url: str | None = None,
+        stream_prefix: str = "ultima",
+        group_name: str = "processors",
+        maxlen: int = 10000,
+    ):
+        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self.stream_prefix = stream_prefix
+        self.group_name = group_name
+        self.maxlen = maxlen
+        self._redis: Redis | None = None
+        self._consumer_name = f"{socket.gethostname()}-{os.getpid()}"
+
+    def _get_stream_name(self, queue_name: str) -> str:
+        """Generate a proper stream name from queue name"""
+        return f"{self.stream_prefix}:{queue_name}"
+
+    async def connect(self) -> None:
+        if self._redis is None:
+            self._redis = Redis.from_url(self.redis_url, decode_responses=False)
+            # Note: We don't create groups here since we don't know which queues will be used
+
+    async def close(self) -> None:
+        if self._redis is not None:
+            await self._redis.close()
+            self._redis = None
+
+    async def publish_message(
+        self,
+        queue_name: str,
+        message: dict[str, Any],
+        print_error: bool = True,
+        suppress: bool = False,
+    ) -> bool:
+        try:
             await self.connect()
-        assert self.channel is not None
-        return await self.channel.declare_queue(
-            queue_name,
-            durable=durable,
-            arguments={"x-message-deduplication": True, "x-max-priority": 10},
-        )
+            assert self._redis is not None
+
+            # Use the proper stream name
+            stream_name = self._get_stream_name(queue_name)
+
+            if not suppress:
+                print(f"Message published to {stream_name}")
+            return True
+
+        except Exception as e:
+            if print_error:
+                print(f"Error publishing message to {queue_name}: {e}")
+            return False
 
     async def consume_messages(
         self,
@@ -129,21 +235,87 @@ class UltimaQueue:
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
         prefetch_count: int = 0,
-    ):
-        """Consume messages from a specified queue."""
-        if not self.channel or self.channel.is_closed:
-            await self.connect(prefetch_count=prefetch_count)
-        queue = await self.declare_queue(queue_name)
+    ) -> None:
+        await self.connect()
+        assert self._redis is not None
 
-        async with queue.iterator() as queue_iter:
-            async for message in queue_iter:
+        stream_name = self._get_stream_name(queue_name)
+
+        # Ensure consumer group exists for this stream
+        try:
+            await self._redis.xgroup_create(
+                stream_name, self.group_name, id="$", mkstream=True
+            )
+        except Exception as e:
+            if "BUSYGROUP" not in str(e):
+                raise
+
+        semaphore = asyncio.Semaphore(prefetch_count or 1)
+
+        async def _process_message(msg_id: str, data: dict[str, Any]):
+            async with semaphore:
                 try:
-                    async with message.process(requeue=True, ignore_processed=True):
-                        await callback(message, *args)
-                        # await message.ack()
-                except Exception as _e:
+
+                    message = RedisMessage(data, msg_id)
+                    await callback(message, *args)
+
+                    # Acknowledge and delete message on success
+                    await self._redis.xack(stream_name, self.group_name, msg_id)
+                    await self._redis.xdel(stream_name, msg_id)
+
+                except Exception as e:
+                    print(f"Error processing message {msg_id}: {e}")
+                    # Leave in PEL for inspection
+
+        # Main consumer loop
+        while True:
+            try:
+                resp = await self._redis.xreadgroup(
+                    self.group_name,
+                    self._consumer_name,
+                    streams={stream_name: ">"},
+                    count=10,
+                    block=5000,
+                )
+
+                if not resp:
                     continue
-        await self.disconnect()
+
+                for _stream, messages in resp:
+                    for msg_id, fields in messages:
+                        body = fields.get(b"body")
+                        try:
+                            data = orjson.loads(body) if body is not None else {}
+                        except Exception:
+                            data = {}
+
+                        msg_id_str = (
+                            msg_id.decode() if isinstance(msg_id, bytes) else msg_id
+                        )
+                        asyncio.create_task(_process_message(msg_id_str, data))
+
+            except Exception as e:
+                print(f"Error in consumer loop for {stream_name}: {e}")
+                await asyncio.sleep(1)
+
+
+class UltimaQueue:
+    """Universal queue system using Redis backend"""
+
+    def __init__(
+        self,
+        backend: QueueBackend = QueueBackend.REDIS,
+        redis_url: str | None = None,
+        stream_prefix: str = "ultima",
+        group_name: str = "processors",
+    ):
+        self.backend_type = backend
+        self._backend: QueueBackendInterface
+
+        if backend == QueueBackend.REDIS:
+            self._backend = RedisQueueBackend(redis_url, stream_prefix, group_name)
+        else:
+            raise ValueError(f"Unsupported backend: {backend}")
 
     async def publish_message(
         self,
@@ -154,57 +326,83 @@ class UltimaQueue:
         unique_id: int | str | None = None,
         headers: dict[str, Any] = {},
         print_error: bool = True,
-        surpress: bool = False,
-    ):
-        if self.channel is None:
-            await self.connect()
-        await self.declare_queue(queue_name, durable)
-        assert self.channel is not None
+        suppress: bool = False,
+    ) -> bool:
+        return await self._backend.publish_message(
+            queue_name=queue_name,
+            message=message,
+            durable=durable,
+            priority=priority,
+            unique_id=unique_id,
+            headers=headers,
+            print_error=print_error,
+            suppress=suppress,
+        )
 
-        if unique_id is None:
-            unique_id = message.get("id")
-        if unique_id:
-            # unique_id = str(unique_id)
-            if not headers:
-                headers = {"x-deduplication-header": unique_id}
-        try:
-            await self.channel.default_exchange.publish(
-                aio_pika.Message(
-                    body=orjson.dumps(message, option=orjson.OPT_NON_STR_KEYS),
-                    delivery_mode=(
-                        aio_pika.DeliveryMode.PERSISTENT
-                        if durable
-                        else aio_pika.DeliveryMode.NOT_PERSISTENT
-                    ),
-                    headers=headers,
-                    priority=priority,
-                ),
-                routing_key=queue_name,
-            )
-            if not surpress:
-                print(f"Message published to {queue_name}")
-            return True
-        except aio_pika.exceptions.DeliveryError as e:
-            if print_error:
-                print(f"Error publishing message: {e}")
-            return False
+    async def consume_messages(
+        self,
+        queue_name: str,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
+    ) -> None:
+        await self._backend.consume_messages(
+            queue_name, callback, *args, prefetch_count=prefetch_count
+        )
 
-    async def publish_notification(self, message: dict[str, Any]):
+    async def publish_notification(self, message: dict[str, Any]) -> None:
+        """Convenience method for publishing notifications"""
         await self.publish_message("telegram_notifications", message)
         await self.publish_message("discord_notifications", message)
 
-    async def push_back_message(
+    async def publish_job(self, job_data: dict[str, Any]) -> bool:
+        """Publish a job to the jobs queue"""
+        return await self.publish_message("jobs", job_data)
+
+    async def publish_scrape_job(self, job_data: dict[str, Any]) -> bool:
+        """Publish a scrape job"""
+        return await self.publish_message("scrape_jobs", job_data)
+
+    async def publish_download_job(self, job_data: dict[str, Any]) -> bool:
+        """Publish a download job"""
+        return await self.publish_message("download_jobs", job_data)
+
+    async def consume_jobs(
+        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+    ) -> None:
+        """Consume jobs from the jobs queue"""
+        await self.consume_messages("jobs", callback, *args)
+
+    async def consume_scrape_jobs(
+        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+    ) -> None:
+        """Consume scrape jobs"""
+        await self.consume_messages("scrape_jobs", callback, *args)
+
+    async def consume_download_jobs(
+        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+    ) -> None:
+        """Consume download jobs"""
+        await self.consume_messages("download_jobs", callback, *args)
+
+    async def consume_notifications(
         self,
-        queue_name: str,
-        message: aio_pika.abc.AbstractIncomingMessage,
-        priority: int | None = None,
-    ):
-        await message.reject()
-        task = orjson.loads(message.body.decode())
-        await self.publish_message(
-            queue_name, task, priority=priority, headers=message.headers
+        notification_type: str,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+    ) -> None:
+        """Consume notifications (telegram_notifications, discord_notifications, etc.)"""
+        await self.consume_messages(
+            f"{notification_type}_notifications", callback, *args
         )
 
-    async def close(self):
-        if self.connection:
-            await self.connection.close()
+
+# Backward compatibility exports
+__all__ = [
+    "UltimaQueue",
+    "StandardData",
+    "MandatoryJob",
+    "QueueBackend",
+    "create_notification",
+    "create_message",
+]
