@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from typing import Any
 
 import ultima_scraper_api
@@ -19,18 +20,6 @@ from ultima_scraper_api.apis.onlyfans.classes.user_model import (
     UserModel as OnlyFansUserModel,
 )
 from ultima_scraper_api.helpers.main_helper import ProgressBar
-from ultima_scraper_collection.config import site_config_types
-from ultima_scraper_collection.managers.content_manager import (
-    ContentManager,
-    MediaManager,
-)
-from ultima_scraper_collection.managers.download_manager import DownloadManager
-from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
-from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
-    MediaMetadata,
-    MetadataManager,
-)
-from ultima_scraper_collection.managers.server_manager import ServerManager
 from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
     FilePathModel as DBFilePathModel,
 )
@@ -46,6 +35,19 @@ from ultima_scraper_db.databases.ultima_archive.schemas.templates.site import (
 )
 from ultima_scraper_renamer.reformat import ReformatManager
 
+from ultima_scraper_collection.config import site_config_types
+from ultima_scraper_collection.managers.content_manager import (
+    ContentManager,
+    MediaManager,
+)
+from ultima_scraper_collection.managers.download_manager import DownloadManager
+from ultima_scraper_collection.managers.filesystem_manager import FilesystemManager
+from ultima_scraper_collection.managers.metadata_manager.metadata_manager import (
+    MediaMetadata,
+    MetadataManager,
+)
+from ultima_scraper_collection.managers.server_manager import ServerManager
+
 auth_types = ultima_scraper_api.auth_types
 user_types = ultima_scraper_api.user_types
 message_types = ultima_scraper_api.message_types
@@ -54,13 +56,13 @@ subscription_types = ultima_scraper_api.subscription_types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dashboard import WorkerDashboardApp
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.fansly import (
         FanslyDataScraper,
     )
     from ultima_scraper_collection.managers.datascraper_manager.datascrapers.onlyfans import (
         OnlyFansDataScraper,
     )
+    from ultima_scraper_collection.progress_events import ProgressEvents
 
     datascraper_types = OnlyFansDataScraper | FanslyDataScraper
 
@@ -121,8 +123,8 @@ class StreamlinedDatascraper:
         self.server_manager: ServerManager = server_manager
         self.content_managers: dict[int, ContentManager] = {}
         self.media_managers: dict[int, MediaManager] = {}
-        self.dashboard: "WorkerDashboardApp | None" = None
         self.worker_id: int = 0
+        self.progress_events: "ProgressEvents | None" = None
 
     def find_metadata_manager(self, user_id: int):
         return self.metadata_manager_users[user_id]
@@ -320,6 +322,19 @@ class StreamlinedDatascraper:
         current_job = user.get_current_job()
         if not current_job:
             return
+
+        # Emit scraping start event
+        if self.progress_events:
+            await self.progress_events.emit(
+                {
+                    "type": "scraping_start",
+                    "worker_id": self.worker_id,
+                    "performer_username": user.username,
+                    "api_type": content_type,
+                    "timestamp": time.time(),
+                }
+            )
+
         temp_master_set: list[Any] = copy.copy(master_set)
         if not temp_master_set and not current_job.ignore:
             match content_type:
@@ -398,21 +413,49 @@ class StreamlinedDatascraper:
             )
             for x in master_set
         ]
-        dashboard = self.dashboard
-        assert dashboard
         total = len(tasks)
         completed = 0
-        worker = dashboard.get_worker(self.worker_id)
+        last_event_time = 0
+        last_event_progress = 0
+        event_throttle_interval = 0.5  # Emit at most every 500ms
+        progress_threshold = 5  # Or every 5% progress
+
         for task in asyncio.as_completed(tasks):
             result = await task
             unrefined_set.append(result)
             completed += 1
-            # Update dashboard scraping progress
-            dashboard.set_scrape_task(
-                self.worker_id,
-                (completed / total) * 100,
-                f"{subscription.username} | {api_type} ({completed}/{total})",
+
+            # Throttle progress events to prevent UI lag
+            current_time = time.time()
+            current_progress = (completed / total) * 100 if total > 0 else 100
+
+            should_emit = (
+                # Time-based throttling: at least 500ms between events
+                (current_time - last_event_time) >= event_throttle_interval
+                or
+                # Progress-based throttling: at least 5% progress change
+                (current_progress - last_event_progress) >= progress_threshold
+                or
+                # Always emit the final event
+                completed == total
             )
+
+            if self.progress_events and should_emit:
+                await self.progress_events.emit(
+                    {
+                        "type": "scraping_progress",
+                        "worker_id": self.worker_id,
+                        "performer_username": subscription.username,
+                        "api_type": api_type,
+                        "completed": completed,
+                        "total": total,
+                        "progress_percentage": current_progress,
+                        "timestamp": current_time,
+                    }
+                )
+                last_event_time = current_time
+                last_event_progress = current_progress
+
             await asyncio.sleep(0)
 
         new_metadata = metadata_manager.merge_content_and_directories(unrefined_set)
@@ -425,10 +468,18 @@ class StreamlinedDatascraper:
                 pass
         else:
             print(f"No {api_type} found.")
-        # Mark as done in dashboard
-        dashboard.set_scrape_task(
-            self.worker_id, 100, f"{subscription.username} | {api_type} (Done)"
-        )
+        # Emit scraping completion event
+        if self.progress_events:
+            await self.progress_events.emit(
+                {
+                    "type": "scraping_complete",
+                    "worker_id": self.worker_id,
+                    "performer_username": subscription.username,
+                    "api_type": api_type,
+                    "total_items": total,
+                    "timestamp": time.time(),
+                }
+            )
         return True
 
     # Downloads scraped content
@@ -501,8 +552,8 @@ class StreamlinedDatascraper:
             filesystem_manager,
             final_download_set,
             global_settings.tools.reformatter.active,
-            self.dashboard,
             self.datascraper.worker_id,
+            progress_events=self.progress_events,
         )
         status = await download_manager.bulk_download(
             performer,

@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiofiles
-from aiohttp.client_exceptions import ClientConnectionError
 import ffmpeg
 import ultima_scraper_api
 from aiohttp import ClientResponse
+from aiohttp.client_exceptions import ClientConnectionError
 from rich.progress import (
     BarColumn,
     Progress,
@@ -41,7 +41,7 @@ from ultima_scraper_collection.managers.metadata_manager.metadata_manager import
 from ultima_scraper_collection.managers.resource_manager import ResourceManager
 
 if TYPE_CHECKING:
-    from dashboard import WorkerDashboardApp
+    from ultima_scraper_collection.progress_events import ProgressEvents
 
 import time
 
@@ -399,16 +399,6 @@ class DownloadItem:
         download_tasks: list[asyncio.Task[Any]] = []
         download_path = self.media_item.get_filepath()
         if download_path.exists():
-            dashboard = self.download_manager.dashboard
-            if dashboard:
-                completed = self.download_manager.completed
-                completed += 1
-                total = self.download_manager.total
-                dashboard.set_download_task(
-                    self.download_manager.worker_id,
-                    (completed / total) * 100 if total else 100,
-                    f"{self.download_manager.completed}/{self.download_manager.total}",
-                )
             return True
         for drm_item in self.drm_media_items:
             file_size = await self.get_remote_file_size(
@@ -427,9 +417,9 @@ class DownloadManager:
         filesystem_manager: FilesystemManager,
         media_set: set[MediaMetadata] = set(),
         reformat: bool = True,
-        dashboard: "WorkerDashboardApp | None" = None,  # Add dashboard argument
-        worker_id: int = 0,  # Add worker_id argument
+        worker_id: int = 0,
         resource_manager: ResourceManager = ResourceManager(),
+        progress_events: "ProgressEvents | None" = None,
     ) -> None:
         self.authed = authed
         self.filesystem_manager = filesystem_manager
@@ -440,7 +430,6 @@ class DownloadManager:
         self.errors: list[TemplateMediaModel] = []
         self.reformat = reformat
         self.reformat_manager = ReformatManager(self.authed, filesystem_manager)
-        self.dashboard: "WorkerDashboardApp|None" = dashboard
         self.worker_id = worker_id
         self.total = 0
         self.completed = 0
@@ -448,6 +437,10 @@ class DownloadManager:
         self.semaphore2 = asyncio.Semaphore(64)
         # Per-domain concurrency fairness to prevent head-of-line blocking across domains
         self._domain_semaphores = {}  # type: ignore[var-annotated]
+        self.progress_events = progress_events
+        # Throttling for download progress events
+        self.last_download_event_time = 0
+        self.last_download_event_progress = 0
 
     def _domain_key(self, url: str) -> str:
         try:
@@ -466,13 +459,42 @@ class DownloadManager:
 
     async def increase_completed(self):
         self.completed += 1
-        if self.dashboard:
-            total = self.total
-            self.dashboard.set_download_task(
-                self.worker_id,
-                (self.completed / total) * 100 if total else 100,
-                f"{self.completed}/{total}",
+        if self.progress_events:
+            current_time = time.time()
+            current_progress = (
+                (self.completed / self.total) * 100 if self.total > 0 else 100
             )
+
+            # Throttle progress events to prevent UI lag
+            event_throttle_interval = 0.5  # Emit at most every 500ms
+            progress_threshold = 5  # Or every 5% progress
+
+            should_emit = (
+                # Time-based throttling: at least 500ms between events
+                (current_time - self.last_download_event_time)
+                >= event_throttle_interval
+                or
+                # Progress-based throttling: at least 5% progress change
+                (current_progress - self.last_download_event_progress)
+                >= progress_threshold
+                or
+                # Always emit the final event
+                self.completed == self.total
+            )
+
+            if should_emit:
+                await self.progress_events.emit(
+                    {
+                        "type": "download_progress",
+                        "worker_id": self.worker_id,
+                        "completed": self.completed,
+                        "total": self.total,
+                        "progress_percentage": current_progress,
+                        "timestamp": current_time,
+                    }
+                )
+                self.last_download_event_time = current_time
+                self.last_download_event_progress = current_progress
 
     async def check_total_size(self):
         async def get_file_size(file: MediaMetadata):
@@ -539,6 +561,19 @@ class DownloadManager:
         download_items = [DownloadItem(x, self) for x in self.content_list]
         self.total = len(download_items)
 
+        # Emit download start event
+        if self.progress_events:
+            await self.progress_events.emit(
+                {
+                    "type": "download_start",
+                    "worker_id": self.worker_id,
+                    "performer_username": performer.username,
+                    "api_type": api_type,
+                    "total_items": len(download_items),
+                    "timestamp": time.time(),
+                }
+            )
+
         # Prepare download tasks
         download_tasks: list[asyncio.Task[Any]] = []
         for item in download_items:
@@ -552,7 +587,6 @@ class DownloadManager:
 
         drm_items = [x for x in download_items if x.drm]
         authed_drm = self.authed.drm
-        dashboard = self.dashboard
         worker_id = self.worker_id
         total = len(drm_items)
         header = f"{performer.username} | {api_type} ({download_media_count}/{total_media_count})"
@@ -573,13 +607,20 @@ class DownloadManager:
                         else:
                             # Handle the error or skip processing if either is None
                             continue
-                        if dashboard:
-                            dashboard.set_download_task(
-                                worker_id,
-                                (completed / total) * 100 if total else 100,
-                                f"{header} [DRM Decrypting: {item.media_item.filename}]",
-                            )
                         decrypted_paths: list[Path] = []
+
+                        # Emit DRM decryption start event
+                        if self.progress_events:
+                            await self.progress_events.emit(
+                                {
+                                    "type": "drm_decryption_start",
+                                    "worker_id": worker_id,
+                                    "performer_username": performer.username,
+                                    "filename": item.media_item.filename,
+                                    "api_type": api_type,
+                                    "timestamp": time.time(),
+                                }
+                            )
 
                         for path in item.drm_download_paths:
                             output = await asyncio.to_thread(
@@ -621,21 +662,41 @@ class DownloadManager:
                                 paths_by_ext[ext] = [merged_path]
                         # Update decrypted_paths to only include the merged (or single) files
                         decrypted_paths = [paths[0] for paths in paths_by_ext.values()]
-                        if dashboard:
-                            dashboard.set_download_task(
-                                worker_id,
-                                (completed / total) * 100 if total else 100,
-                                f"{header} [DRM Merging: {item.media_item.filename}]",
+
+                        # Emit DRM merge start event
+                        if self.progress_events:
+                            await self.progress_events.emit(
+                                {
+                                    "type": "drm_merge_start",
+                                    "worker_id": worker_id,
+                                    "performer_username": performer.username,
+                                    "filename": item.media_item.filename,
+                                    "api_type": api_type,
+                                    "timestamp": time.time(),
+                                }
                             )
+
                         future = asyncio.get_event_loop().create_future()
                         await queue.put((final_path, decrypted_paths, future))
                         await future
                         completed += 1
-                        if dashboard:
-                            dashboard.set_download_task(
-                                worker_id,
-                                (completed / total) * 100 if total else 100,
-                                f"{header} [DRM {completed}/{total}]",
+
+                        # Emit DRM complete event
+                        if self.progress_events:
+                            await self.progress_events.emit(
+                                {
+                                    "type": "drm_complete",
+                                    "worker_id": worker_id,
+                                    "performer_username": performer.username,
+                                    "filename": item.media_item.filename,
+                                    "completed": completed,
+                                    "total": total,
+                                    "progress_percentage": (
+                                        (completed / total) * 100 if total > 0 else 100
+                                    ),
+                                    "api_type": api_type,
+                                    "timestamp": time.time(),
+                                }
                             )
                     except Exception as e:
                         print(
@@ -657,10 +718,19 @@ class DownloadManager:
         worker_task.cancel()
         await asyncio.gather(worker_task, return_exceptions=True)
 
-        if dashboard:
-            dashboard.set_download_task(
-                worker_id, 100, f"{performer.username} | {api_type} (Done)"
+        # Emit job completion event
+        if self.progress_events:
+            await self.progress_events.emit(
+                {
+                    "type": "download_complete",
+                    "worker_id": self.worker_id,
+                    "performer_username": performer.username,
+                    "api_type": api_type,
+                    "total_items": len(download_items),
+                    "timestamp": time.time(),
+                }
             )
+
         if download_items:
             return True
         return False

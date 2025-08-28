@@ -215,6 +215,13 @@ class RedisQueueBackend(QueueBackendInterface):
 
             # Use the proper stream name
             stream_name = self._get_stream_name(queue_name)
+            # Write message into Redis Stream under field 'body'
+            await self._redis.xadd(
+                stream_name,
+                {b"body": orjson.dumps(message)},
+                maxlen=self.maxlen,
+                approximate=True,
+            )
 
             if not suppress:
                 print(f"Message published to {stream_name}")
