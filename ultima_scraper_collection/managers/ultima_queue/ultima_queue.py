@@ -168,7 +168,25 @@ class QueueBackendInterface(ABC):
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
         prefetch_count: int = 0,
+        consumer_name: str | None = None,
     ) -> None:
+        pass
+
+    @abstractmethod
+    async def process_history_and_reclaim(
+        self,
+        queue_name: str,
+        *,
+        prefetch_count: int = 0,
+        consumer_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Collect reclaimable messages for the given queue and consumers.
+
+        Returns a list of message payload dicts: {'id': id, 'data': {...}}
+        The backend should remove the original entries (ack+del) to avoid
+        duplicate delivery; callers will re-publish or distribute the
+        returned payloads to consumers.
+        """
         pass
 
 
@@ -205,6 +223,248 @@ class RedisQueueBackend(QueueBackendInterface):
             self._reclaim_batch = int(os.getenv("ULTIMA_REDIS_RECLAIM_BATCH", "100"))
         except Exception:
             self._reclaim_batch = 100
+
+    async def process_history_and_reclaim(
+        self,
+        queue_name: str,
+        *,
+        prefetch_count: int = 0,
+        consumer_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Collect history entries and reclaim pending messages, returning a list of payloads.
+
+        This implementation will ACK+DEL reclaimed entries (to avoid duplicates)
+        and return their payloads for the caller (manager) to re-publish or
+        distribute to workers.
+        """
+        await self.connect()
+        assert self._redis is not None
+
+        reclaimed: list[dict[str, Any]] = []
+        stream_name = self._get_stream_name(queue_name)
+        consumers_list = consumer_names or [self._consumer_name]
+
+        # Deliver any never-consumed historical entries for the first consumer
+        try:
+            first_consumer = consumers_list[0]
+            while True:
+                history_resp = await self._redis.xreadgroup(
+                    self.group_name,
+                    first_consumer,
+                    streams={stream_name: "0"},
+                    count=max(1, prefetch_count or 1),
+                )
+                if not history_resp:
+                    break
+                made_progress = False
+                for _stream, messages in history_resp:
+                    for msg_id, fields in messages:
+                        fields_map = cast(dict[bytes, bytes], fields)
+                        body_bytes = fields_map.get(b"body")
+                        if body_bytes is not None:
+                            decoded_payload: Any = orjson.loads(body_bytes)
+                            if isinstance(decoded_payload, dict):
+                                data: dict[str, Any] = cast(
+                                    dict[str, Any], decoded_payload
+                                )
+                            else:
+                                data = {"body": decoded_payload}
+                        else:
+                            data = {}
+                        msg_id_str = (
+                            msg_id.decode()
+                            if isinstance(msg_id, (bytes, bytearray))
+                            else msg_id
+                        )
+                        reclaimed.append({"id": msg_id_str, "data": data})
+                        try:
+                            await self._redis.xack(
+                                stream_name, self.group_name, msg_id_str
+                            )
+                            await self._redis.xdel(stream_name, msg_id_str)
+                            made_progress = True
+                        except Exception as e:
+                            print(f"Error removing history message {msg_id_str}: {e}")
+                if not made_progress:
+                    break
+        except Exception as e:
+            print(f"Error delivering history for {stream_name}: {e}")
+
+        # Reclaim pending entries using XAUTOCLAIM when available, falling back
+        # to XPENDING/XCLAIM for older servers.
+        for local_consumer in consumers_list:
+            try:
+                start_id: str | bytes = "0-0"
+                while True:
+                    try:
+                        xac_ret = await self._redis.xautoclaim(
+                            stream_name,
+                            self.group_name,
+                            local_consumer,
+                            self._reclaim_min_idle_ms,
+                            start_id,
+                            count=self._reclaim_batch,
+                            justid=False,
+                        )
+                    except Exception:
+                        raise
+
+                    # redis-py may return (next_id, messages) or (next_id, messages, deleted)
+                    if isinstance(xac_ret, (list, tuple)):
+                        ln = len(xac_ret)  # type: ignore[arg-type]
+                        if ln == 2:
+                            next_id_any, claimed_any = cast(tuple[Any, Any], xac_ret)
+                        elif ln == 3:
+                            next_id_any, claimed_any, _deleted = cast(
+                                tuple[Any, Any, Any], xac_ret
+                            )
+                        else:
+                            raise ValueError(
+                                "Unexpected XAUTOCLAIM return format with length "
+                                + str(ln)
+                            )
+                        next_id = cast(str | bytes, next_id_any)
+                        claimed_list = cast(
+                            list[tuple[bytes | str, dict[bytes, bytes]]],
+                            claimed_any,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unexpected XAUTOCLAIM return type: {type(xac_ret)}"
+                        )
+
+                    if not claimed_list:
+                        break
+
+                    for msg_id_raw, fields in claimed_list:
+                        fields_map = fields
+                        body_bytes = fields_map.get(b"body")
+                        if body_bytes is not None:
+                            decoded_payload2: Any = orjson.loads(body_bytes)
+                            if isinstance(decoded_payload2, dict):
+                                data = cast(dict[str, Any], decoded_payload2)
+                            else:
+                                data = {"body": decoded_payload2}
+                        else:
+                            data = {}
+
+                        msg_id_str = (
+                            msg_id_raw.decode()
+                            if isinstance(msg_id_raw, (bytes, bytearray))
+                            else str(msg_id_raw)
+                        )
+
+                        reclaimed.append({"id": msg_id_str, "data": data})
+                        try:
+                            await self._redis.xack(
+                                stream_name, self.group_name, msg_id_str
+                            )
+                            await self._redis.xdel(stream_name, msg_id_str)
+                        except Exception as e:
+                            print(f"Error removing claimed message {msg_id_str}: {e}")
+
+                    # Advance start_id; when server says '0-0' there are no further entries
+                    if next_id in ("0-0", b"0-0"):
+                        break
+                    start_id = next_id
+            except Exception as e:
+                print(
+                    f"INFO: XAUTOCLAIM not available or failed for {stream_name}: {e}. Falling back to XPENDING/XCLAIM."
+                )
+
+                try:
+                    while True:
+                        try:
+                            pending = await self._redis.execute_command(
+                                b"XPENDING",
+                                stream_name,
+                                self.group_name,
+                                b"IDLE",
+                                str(self._reclaim_min_idle_ms).encode(),
+                                b"-",
+                                b"+",
+                                str(self._reclaim_batch).encode(),
+                            )
+                        except Exception as _xp_err:
+                            print(
+                                f"WARN: XPENDING fallback failed for {stream_name}: {_xp_err}"
+                            )
+                            break
+
+                        if not pending:
+                            break
+
+                        ids: list[bytes] = []
+                        pending_rows = cast(list[list[Any] | tuple[Any, ...]], pending)
+                        for row in pending_rows:
+                            if not row:
+                                continue
+                            mid_val: Any = row[0]
+                            mid_str: str = (
+                                mid_val.decode()
+                                if isinstance(mid_val, (bytes, bytearray))
+                                else str(mid_val)
+                            )
+                            ids.append(mid_str.encode())
+
+                        if not ids:
+                            break
+
+                        try:
+                            claimed_entries = await self._redis.execute_command(
+                                b"XCLAIM",
+                                stream_name,
+                                self.group_name,
+                                local_consumer,
+                                str(self._reclaim_min_idle_ms).encode(),
+                                *ids,
+                            )
+                        except Exception as _xc_err:
+                            print(
+                                f"WARN: XCLAIM fallback failed for {stream_name}: {_xc_err}"
+                            )
+                            break
+
+                        if not claimed_entries:
+                            continue
+
+                        entries_list = cast(
+                            list[tuple[bytes | str, dict[bytes, bytes]]],
+                            claimed_entries,
+                        )
+                        for msg_id_raw, fields_map2 in entries_list:
+                            msg_id_str: str = (
+                                msg_id_raw.decode()
+                                if isinstance(msg_id_raw, (bytes, bytearray))
+                                else str(msg_id_raw)
+                            )
+
+                            body_bytes2 = fields_map2.get(b"body")
+                            if body_bytes2 is not None:
+                                decoded_payload3: Any = orjson.loads(body_bytes2)
+                                if isinstance(decoded_payload3, dict):
+                                    data = cast(dict[str, Any], decoded_payload3)
+                                else:
+                                    data = {"body": decoded_payload3}
+                            else:
+                                data = {}
+
+                            reclaimed.append({"id": msg_id_str, "data": data})
+                            try:
+                                await self._redis.xack(
+                                    stream_name, self.group_name, msg_id_str
+                                )
+                                await self._redis.xdel(stream_name, msg_id_str)
+                            except Exception as _proc_err:
+                                print(
+                                    f"Error removing claimed (fallback) message {msg_id_str}: {_proc_err}"
+                                )
+                except Exception as _fallback_err:
+                    print(
+                        f"Error during XPENDING/XCLAIM fallback for {stream_name}: {_fallback_err}"
+                    )
+
+        return reclaimed
 
     def _get_stream_name(self, queue_name: str) -> str:
         """Generate a proper stream name from queue name"""
@@ -256,11 +516,14 @@ class RedisQueueBackend(QueueBackendInterface):
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
         prefetch_count: int = 0,
+        consumer_name: str | None = None,
     ) -> None:
         await self.connect()
         assert self._redis is not None
 
         stream_name = self._get_stream_name(queue_name)
+        # Resolve the consumer identity to use for this consume loop
+        local_consumer = consumer_name or self._consumer_name
 
         # Ensure consumer group exists for this stream
         try:
@@ -282,251 +545,22 @@ class RedisQueueBackend(QueueBackendInterface):
                         f"WARN: Failed to set group id to 0 for {stream_name}/{self.group_name}: {_e}"
                     )
 
-        # Deliver any never-consumed historical entries for this group (if any)
-        try:
-            while True:
-                history_resp = await self._redis.xreadgroup(
-                    self.group_name,
-                    self._consumer_name,
-                    streams={stream_name: "0"},
-                    count=max(1, prefetch_count or 1),
-                )
-                if not history_resp:
-                    break
-                made_progress = False
-                for _stream, messages in history_resp:
-                    for msg_id, fields in messages:
-                        # Cast returned fields to expected bytes map
-                        fields_map = cast(dict[bytes, bytes], fields)
-                        body_bytes = fields_map.get(b"body")
-                        if body_bytes is not None:
-                            decoded_payload: Any = orjson.loads(body_bytes)
-                            if isinstance(decoded_payload, dict):
-                                data: dict[str, Any] = cast(
-                                    dict[str, Any], decoded_payload
-                                )
-                            else:
-                                data = {"body": decoded_payload}
-                        else:
-                            data = {}
-                        msg_id_str = (
-                            msg_id.decode()
-                            if isinstance(msg_id, (bytes, bytearray))
-                            else msg_id
-                        )
-                        try:
-                            message = RedisMessage(data, msg_id_str)
-                            await callback(message, *args)
-                            await self._redis.xack(
-                                stream_name, self.group_name, msg_id_str
-                            )
-                            await self._redis.xdel(stream_name, msg_id_str)
-                            made_progress = True
-                        except Exception as e:
-                            print(f"Error processing history message {msg_id_str}: {e}")
-                if not made_progress:
-                    break
-        except Exception as e:
-            print(f"Error delivering history for {stream_name}: {e}")
+        # # Deliver history and reclaim pending entries (extracted helper)
+        # await self.process_history_and_reclaim(
+        #     queue_name,
+        #     callback,
+        #     *args,
+        #     prefetch_count=prefetch_count,
+        #     consumer_name=local_consumer,
+        # )
 
-        # First, reclaim and process any stale pending entries using XAUTOCLAIM.
-        # This retries abandoned jobs from previous runs.
-        try:
-            start_id: str | bytes = "0-0"
-            while True:
-                try:
-                    xac_ret = await self._redis.xautoclaim(
-                        stream_name,
-                        self.group_name,
-                        self._consumer_name,
-                        self._reclaim_min_idle_ms,
-                        start_id,
-                        count=self._reclaim_batch,
-                        justid=False,
-                    )
-                    # redis-py may return (next_id, messages) or (next_id, messages, deleted)
-                    if isinstance(xac_ret, (list, tuple)):
-                        ln = len(xac_ret)  # type: ignore[arg-type]
-                        if ln == 2:
-                            next_id_any, claimed_any = cast(tuple[Any, Any], xac_ret)
-                        elif ln == 3:
-                            next_id_any, claimed_any, _deleted = cast(
-                                tuple[Any, Any, Any], xac_ret
-                            )
-                        else:
-                            raise ValueError(
-                                "Unexpected XAUTOCLAIM return format with length "
-                                + str(ln)
-                            )
-                        next_id = cast(str | bytes, next_id_any)
-                        claimed_list = cast(
-                            list[tuple[bytes | str, dict[bytes, bytes]]],
-                            claimed_any,
-                        )
-                    else:
-                        raise ValueError(
-                            f"Unexpected XAUTOCLAIM return type: {type(xac_ret)}"
-                        )
-                except Exception as _e:
-                    # If server doesn't support XAUTOCLAIM or other error, stop reclaim attempts
-                    raise
-
-                if not claimed_list:
-                    break
-
-                for msg_id_raw, fields in claimed_list:
-                    fields_map = fields
-                    body_bytes = fields_map.get(b"body")
-                    if body_bytes is not None:
-                        decoded_payload2: Any = orjson.loads(body_bytes)
-                        if isinstance(decoded_payload2, dict):
-                            data = cast(dict[str, Any], decoded_payload2)
-                        else:
-                            data = {"body": decoded_payload2}
-                    else:
-                        data = {}
-
-                    msg_id_str = (
-                        msg_id_raw.decode()
-                        if isinstance(msg_id_raw, (bytes, bytearray))
-                        else str(msg_id_raw)
-                    )
-
-                    try:
-                        message = RedisMessage(data, msg_id_str)
-                        await callback(message, *args)
-                        await self._redis.xack(stream_name, self.group_name, msg_id_str)
-                        await self._redis.xdel(stream_name, msg_id_str)
-                    except Exception as e:
-                        print(f"Error processing claimed message {msg_id_str}: {e}")
-                        # Leave in PEL for future retry
-
-                # Advance start_id; when server says '0-0' there are no further entries
-                if next_id in ("0-0", b"0-0"):
-                    break
-                start_id = next_id
-        except Exception as e:
-            print(
-                f"INFO: XAUTOCLAIM not available or failed for {stream_name}: {e}. Falling back to XPENDING/XCLAIM."
-            )
-
-            # Fallback for Redis versions < 6.2 (no XAUTOCLAIM):
-            # Use XPENDING (with IDLE) to page pending IDs, then XCLAIM to transfer to this consumer.
-            try:
-                while True:
-                    # XPENDING key group IDLE min_idle - + count
-                    try:
-                        pending = await self._redis.execute_command(
-                            b"XPENDING",
-                            stream_name,
-                            self.group_name,
-                            b"IDLE",
-                            str(self._reclaim_min_idle_ms).encode(),
-                            b"-",
-                            b"+",
-                            str(self._reclaim_batch).encode(),
-                        )
-                    except Exception as _xp_err:
-                        print(
-                            f"WARN: XPENDING fallback failed for {stream_name}: {_xp_err}"
-                        )
-                        break
-
-                    if not pending:
-                        break
-
-                    # Extract message IDs to claim
-                    ids: list[bytes] = []
-                    pending_rows = cast(list[list[Any] | tuple[Any, ...]], pending)
-                    for row in pending_rows:
-                        # row structure: [id, consumer, idle, deliveries]
-                        if not row:
-                            continue
-                        mid_val: Any = row[0]
-                        mid_str: str = (
-                            mid_val.decode()
-                            if isinstance(mid_val, (bytes, bytearray))
-                            else str(mid_val)
-                        )
-                        ids.append(mid_str.encode())
-
-                    if not ids:
-                        break
-
-                    # XCLAIM key group consumer min-idle-time id [id ...]
-                    try:
-                        claimed_entries = await self._redis.execute_command(
-                            b"XCLAIM",
-                            stream_name,
-                            self.group_name,
-                            self._consumer_name,
-                            str(self._reclaim_min_idle_ms).encode(),
-                            *ids,
-                        )
-                    except Exception as _xc_err:
-                        print(
-                            f"WARN: XCLAIM fallback failed for {stream_name}: {_xc_err}"
-                        )
-                        break
-
-                    # Process claimed entries (same shape as XRANGE/XREAD responses)
-                    if not claimed_entries:
-                        # Nothing claimed (maybe contested); try next iteration
-                        continue
-
-                    entries_list = cast(
-                        list[tuple[bytes | str, dict[bytes, bytes]]],
-                        claimed_entries,
-                    )
-                    for msg_id_raw, fields_map2 in entries_list:
-                        # msg structure: [id, {field: value, ...}]
-                        # Types ensured by cast above
-                        # Normalize msg_id to str
-                        msg_id_str: str = (
-                            msg_id_raw.decode()
-                            if isinstance(msg_id_raw, (bytes, bytearray))
-                            else str(msg_id_raw)
-                        )
-
-                        # Fields are bytes keys/values; fetch body
-                        body_bytes2 = fields_map2.get(b"body")
-                        if body_bytes2 is not None:
-                            decoded_payload3: Any = orjson.loads(body_bytes2)
-                            if isinstance(decoded_payload3, dict):
-                                data = cast(dict[str, Any], decoded_payload3)
-                            else:
-                                data = {"body": decoded_payload3}
-                        else:
-                            data = {}
-
-                        try:
-                            message = RedisMessage(data, msg_id_str)
-                            await callback(message, *args)
-                            await self._redis.xack(
-                                stream_name, self.group_name, msg_id_str
-                            )
-                            await self._redis.xdel(stream_name, msg_id_str)
-                        except Exception as _proc_err:
-                            print(
-                                f"Error processing claimed (fallback) message {msg_id_str}: {_proc_err}"
-                            )
-                            # Leave in PEL for future retry
-            except Exception as _fallback_err:
-                print(
-                    f"Error during XPENDING/XCLAIM fallback for {stream_name}: {_fallback_err}"
-                )
-
-        # Sequential processing: one in-flight job at a time per consumer.
-        # Respect prefetch_count by limiting how many are fetched in a single read,
-        # but still process them one-by-one synchronously to avoid building up PEL.
+        # Main consumer loop: read new messages and process them inline
         read_count = max(1, prefetch_count or 1)
-
-        # Main consumer loop
         while True:
             try:
                 resp = await self._redis.xreadgroup(
                     self.group_name,
-                    self._consumer_name,
+                    local_consumer,
                     streams={stream_name: ">"},
                     count=read_count,
                     block=5000,
@@ -555,11 +589,8 @@ class RedisQueueBackend(QueueBackendInterface):
                         )
 
                         try:
-                            # Process inline to ensure single active job per consumer
                             message = RedisMessage(data, msg_id_str)
                             await callback(message, *args)
-
-                            # Acknowledge and delete message on success
                             await self._redis.xack(
                                 stream_name, self.group_name, msg_id_str
                             )
@@ -583,6 +614,7 @@ class UltimaQueue:
         stream_prefix: str = "ultima",
         group_name: str = "processors",
     ):
+        self.consumers: list[UltimaConsumer] = []
         self.backend_type = backend
         self._backend: QueueBackendInterface
 
@@ -608,15 +640,30 @@ class UltimaQueue:
             suppress=suppress,
         )
 
-    async def consume_messages(
+    # Consume APIs are provided by `UltimaConsumer` (created via `create_consumer`).
+    # The manager keeps publishing helpers only.
+
+    def create_consumer(self, name: str) -> "UltimaConsumer":
+        """Create a named consumer bound to this queue manager."""
+        consumer = UltimaConsumer(self, name)
+        self.consumers.append(consumer)
+        return consumer
+
+    async def consume_with_name(
         self,
         queue_name: str,
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
         prefetch_count: int = 0,
+        consumer_name: str | None = None,
     ) -> None:
+        """Public delegator used by UltimaConsumer to invoke backend consume with a specific consumer name."""
         await self._backend.consume_messages(
-            queue_name, callback, *args, prefetch_count=prefetch_count
+            queue_name,
+            callback,
+            *args,
+            prefetch_count=prefetch_count,
+            consumer_name=consumer_name,
         )
 
     async def publish_notification(self, message: dict[str, Any]) -> None:
@@ -636,33 +683,132 @@ class UltimaQueue:
         """Publish a download job"""
         return await self.publish_message("download_jobs", job_data)
 
-    async def consume_jobs(
-        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+    async def process_history_and_reclaim(
+        self,
+        consumers: list["UltimaConsumer"],
+        queue_name: str,
+        prefetch_count: int = 0,
     ) -> None:
-        """Consume jobs from the jobs queue"""
-        await self.consume_messages("jobs", callback, *args)
+        """Delegate reclaim/history work to the configured backend implementation.
+
+        The manager-level helper accepts an `UltimaConsumer` instance so callers
+        can pass a specific consumer to own the reclaimed work. The real
+        implementation lives on the backend (e.g. RedisQueueBackend).
+        """
+        # Delegate to the backend implementation. RedisQueueBackend exposes
+        # `process_history_and_reclaim`. Use a cast for static typing clarity.
+        backend_impl = cast(RedisQueueBackend, self._backend)
+        consumer_names = [c.consumer_name for c in consumers]
+        reclaimed = await backend_impl.process_history_and_reclaim(
+            queue_name, prefetch_count=prefetch_count, consumer_names=consumer_names
+        )
+
+        # Simple distribution: round-robin assign reclaimed payloads back to consumers
+        if reclaimed:
+            idx = 0
+            num_consumers = len(consumers) or 1
+            for item in reclaimed:
+                # Each item has {'id': id, 'data': {...}}
+                target_consumer = consumers[idx % num_consumers]
+                # Re-publish message to the same queue so consumers will pick it up.
+                # We attach a header to indicate the intended consumer (optional).
+                payload = (
+                    item["data"].copy()
+                    if isinstance(item.get("data"), dict)
+                    else {"body": item.get("data")}
+                )
+                headers_dict = (
+                    payload.get("_headers")
+                    if isinstance(payload.get("_headers"), dict)
+                    else {}
+                )
+                headers_dict["target_consumer"] = target_consumer.consumer_name
+                payload["_headers"] = headers_dict
+                await self.publish_message(queue_name, payload)
+                idx += 1
+        return None
+
+    # Note: consume helpers removed from manager. Use an `UltimaConsumer`:
+    # consumer = queue.create_consumer("name")
+    # await consumer.consume_messages(...)
+
+
+class UltimaConsumer:
+    """Lightweight consumer wrapper with a fixed consumer name bound to a queue manager."""
+
+    def __init__(self, manager: "UltimaQueue", consumer_name: str) -> None:
+        self.manager = manager
+        self.consumer_name = consumer_name
+
+    async def consume_messages(
+        self,
+        queue_name: str,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
+    ) -> None:
+        # Delegate to the manager via public delegator, binding this consumer's name.
+        # Calculate a numeric worker_id from the consumer name (e.g. 'worker-3' -> 3)
+        try:
+            worker_id = int(self.consumer_name.split("-")[1])
+        except Exception:
+            worker_id = 0
+
+        # Prepend worker_id so the callback receives it as args[0]
+        new_args = (worker_id,)
+        if args:
+            new_args = new_args + tuple(args)
+
+        await self.manager.consume_with_name(
+            queue_name,
+            callback,
+            *new_args,
+            prefetch_count=prefetch_count,
+            consumer_name=self.consumer_name,
+        )
+
+    async def consume_jobs(
+        self,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
+    ) -> None:
+        await self.consume_messages(
+            "jobs", callback, *args, prefetch_count=prefetch_count
+        )
 
     async def consume_scrape_jobs(
-        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+        self,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
     ) -> None:
-        """Consume scrape jobs"""
-        await self.consume_messages("scrape_jobs", callback, *args)
+        await self.consume_messages(
+            "scrape_jobs", callback, *args, prefetch_count=prefetch_count
+        )
 
     async def consume_download_jobs(
-        self, callback: Callable[[Any, Any], Coroutine[Any, Any, None]], *args: Any
+        self,
+        callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
+        *args: Any,
+        prefetch_count: int = 0,
     ) -> None:
-        """Consume download jobs"""
-        await self.consume_messages("download_jobs", callback, *args)
+        await self.consume_messages(
+            "download_jobs", callback, *args, prefetch_count=prefetch_count
+        )
 
     async def consume_notifications(
         self,
         notification_type: str,
         callback: Callable[[Any, Any], Coroutine[Any, Any, None]],
         *args: Any,
+        prefetch_count: int = 0,
     ) -> None:
-        """Consume notifications (telegram_notifications, discord_notifications, etc.)"""
         await self.consume_messages(
-            f"{notification_type}_notifications", callback, *args
+            f"{notification_type}_notifications",
+            callback,
+            *args,
+            prefetch_count=prefetch_count,
         )
 
 
@@ -674,4 +820,5 @@ __all__ = [
     "QueueBackend",
     "create_notification",
     "create_message",
+    "UltimaConsumer",
 ]
