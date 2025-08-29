@@ -189,6 +189,16 @@ class QueueBackendInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    async def list_queue_jobs(
+        self, queue_name: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return a list of entries for the given queue with status information.
+
+        Each item in the returned list will be a dict: {"id": <id>, "data": {...}, "status": "queued"|"pending"}
+        """
+        pass
+
 
 class RedisQueueBackend(QueueBackendInterface):
     """Redis Streams implementation of queue backend"""
@@ -465,6 +475,77 @@ class RedisQueueBackend(QueueBackendInterface):
                     )
 
         return reclaimed
+
+    async def list_queue_jobs(
+        self, queue_name: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """List entries in the stream and mark them as 'pending' if present in the consumer group's PEL.
+
+        This performs an XRANGE to fetch recent entries and an XPENDING to collect pending ids
+        belonging to this consumer group. Entries returned will include the original body
+        decoded and a status field ('queued' or 'pending').
+        """
+        await self.connect()
+        assert self._redis is not None
+
+        stream_name = self._get_stream_name(queue_name)
+        pending_ids: set[str] = set()
+
+        # Try to collect pending IDs for the group. Use XPENDING <stream> <group> - + COUNT
+        try:
+            pending = await self._redis.execute_command(
+                "XPENDING", stream_name, self.group_name, "-", "+", str(limit)
+            )
+            if pending:
+                for row in pending:
+                    if not row:
+                        continue
+                    mid = row[0]
+                    mid_str = (
+                        mid.decode()
+                        if isinstance(mid, (bytes, bytearray))
+                        else str(mid)
+                    )
+                    pending_ids.add(mid_str)
+        except Exception:
+            # If XPENDING fails (older servers, permissions), just proceed without pending info
+            pending_ids = set()
+
+        # Fetch entries from the stream
+        try:
+            entries = await self._redis.xrange(stream_name, "-", "+", count=limit)
+        except Exception:
+            entries = []
+
+        results: list[dict[str, Any]] = []
+        for msg_id, fields in entries:
+            fields_map = fields
+            body_bytes = None
+            if isinstance(fields_map, dict):
+                # keys are bytes when decode_responses=False
+                body_bytes = fields_map.get(b"body") or fields_map.get("body")
+
+            if body_bytes is not None:
+                try:
+                    decoded = orjson.loads(body_bytes)
+                except Exception:
+                    decoded = {"body": body_bytes}
+                if isinstance(decoded, dict):
+                    data = decoded
+                else:
+                    data = {"body": decoded}
+            else:
+                data = {}
+
+            msg_id_str = (
+                msg_id.decode()
+                if isinstance(msg_id, (bytes, bytearray))
+                else str(msg_id)
+            )
+            status = "pending" if msg_id_str in pending_ids else "queued"
+            results.append({"id": msg_id_str, "data": data, "status": status})
+
+        return results
 
     def _get_stream_name(self, queue_name: str) -> str:
         """Generate a proper stream name from queue name"""
