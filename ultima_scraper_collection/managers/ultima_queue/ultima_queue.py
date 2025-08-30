@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, AsyncIterator, Callable, Coroutine, Optional, cast
 
 import orjson
+from pydantic import BaseModel
 from redis.asyncio import Redis
 
 
@@ -45,106 +46,87 @@ class QueueBackend(Enum):
     REDIS = "redis"
 
 
-class MandatoryJob:
-    def __init__(
-        self,
-        job_name: str,
-        success_queue_name: str | None = None,
-        failure_queue_name: str | None = None,
-    ) -> None:
-        self.job_name = job_name
-        self.success_queue_name = success_queue_name
-        self.failure_queue_name = failure_queue_name
+class StandardData(BaseModel):
+    class OptionData(BaseModel):
+        class MandatoryJob(BaseModel):
+            job_name: str
+            success_queue_name: str | None = None
+            failure_queue_name: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "job_name": self.job_name,
-            "success_queue_name": self.success_queue_name,
-            "failure_queue_name": self.failure_queue_name,
-        }
+        mandatory_jobs: list[MandatoryJob] = []
+        ppv_only: bool = False
+        extra_data: dict[str, Any] = {}
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MandatoryJob":
-        return cls(**data)
+        def create_mandatory_job(
+            self,
+            job_name: str,
+            success_queue_name: str | None = None,
+            failure_queue_name: str | None = None,
+        ) -> "StandardData.OptionData.MandatoryJob":
+            # Check if a job with the same job_name already exists
+            for job in self.mandatory_jobs:
+                if job.job_name == job_name:
+                    return job  # Return the existing job if found
 
+            # If no match is found, create and add the new job
+            mandatory_job = self.MandatoryJob(
+                job_name=job_name,
+                success_queue_name=success_queue_name,
+                failure_queue_name=failure_queue_name,
+            )
+            self.mandatory_jobs.append(mandatory_job)
+            return mandatory_job
 
-class StandardData:
-    def __init__(
-        self,
-        site_name: str,
-        performer_id: int,
-        performer_username: str,
-        category: str = "",
-        mandatory_jobs: list[MandatoryJob] | None = None,
-        extra_data: dict[str, Any] | None = None,
-    ) -> None:
-        self.site_name = site_name
-        self.performer_id = performer_id
-        self.performer_username = performer_username
-        # Avoid mutable default arguments
-        self.mandatory_jobs = mandatory_jobs or []
-        self.category = category
-        self.extra_data = extra_data or {}
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "site_name": self.site_name,
-            "performer_id": self.performer_id,
-            "performer_username": self.performer_username,
-            "mandatory_jobs": [x.to_dict() for x in self.mandatory_jobs],
-            "category": self.category,
-            "extra_data": self.extra_data,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StandardData":
-        data = data.copy()  # Don't modify the original
-        data.pop("queue", None)  # Remove queue field if present
-        mandatory_jobs = [
-            MandatoryJob.from_dict(x) for x in data.get("mandatory_jobs", [])
-        ]
-        data.pop("mandatory_jobs", None)
-        return cls(**data, mandatory_jobs=mandatory_jobs)
-
-    @classmethod
-    def from_legacy(cls, data: dict[str, Any]) -> "StandardData":
-        temp_data = data["data"]
-        return cls(
-            site_name=temp_data["site_name"],
-            performer_id=temp_data["performer_id"],
-            performer_username=temp_data["username"],
-        )
-
-    def create_mandatory_job(
-        self,
-        job_name: str,
-        success_queue_name: str | None = None,
-        failure_queue_name: str | None = None,
-    ) -> MandatoryJob:
-        # Check if a job with the same job_name already exists
-        for job in self.mandatory_jobs:
-            if job.job_name == job_name:
-                return job  # Return the existing job if found
-
-        # If no match is found, create and add the new job
-        mandatory_job = MandatoryJob(job_name, success_queue_name, failure_queue_name)
-        self.mandatory_jobs.append(mandatory_job)
-        return mandatory_job
+    site_name: str
+    user_id: int
+    username: str
+    category: str = ""
+    options: OptionData = OptionData()
+    host_id: int | None = None
+    skippable: bool = False
+    active: bool | None = None
 
 
 # Create a message-like object for compatibility
 class RedisMessage:
-    def __init__(self, body_data: dict[str, Any], msg_id: str):
+    def __init__(
+        self,
+        backend: "RedisQueueBackend",
+        stream_name: str,
+        body_data: dict[str, Any],
+        msg_id: str,
+    ):
+        self._backend = backend
+        self._stream_name = stream_name
         self.body = orjson.dumps(body_data)
         self.headers = body_data.get("_headers", {})
         self._msg_id = msg_id
         self._data = body_data
 
     async def ack(self):
-        pass  # Handled automatically after successful processing
+        """Acknowledge and delete this message from the stream."""
+        try:
+            await self._backend._ack_and_del(self._stream_name, self._msg_id)
+            # Best-effort: remove dedupe key if message carried a fingerprint
+            try:
+                fp = (
+                    self._data.get("_fingerprint")
+                    if isinstance(self._data, dict)
+                    else None
+                )
+                await self._backend._remove_dedupe_if_matches(
+                    self._stream_name, fp, self._msg_id
+                )
+            except Exception:
+                pass
+        except Exception:
+            # Best-effort; swallow errors to avoid crashing handler
+            pass
 
     async def reject(self):
-        pass  # Could implement retry logic here
+        """Placeholder for rejecting/requeuing the message."""
+        # Could be expanded to implement dead-lettering or retries
+        pass
 
     def get_data(self) -> dict[str, Any]:
         return self._data
@@ -621,6 +603,47 @@ class RedisQueueBackend:
             await self._redis.close()
             self._redis = None
 
+    def _get_fingerprint_source(
+        self, queue_name: str, message: dict[str, Any]
+    ) -> bytes:
+        """Build a stable, minimal bytes source for fingerprinting.
+
+        By default this builds a compact representation containing only the
+        core job-identifying fields so that incidental metadata (server ids,
+        priority, ephemeral extra_data) doesn't prevent deduplication.
+
+        Set the environment variable ULTIMA_DEDUPE_STRICT=1 to fall back to a
+        strict mode that fingerprints the entire message object instead.
+        """
+        strict = os.getenv("ULTIMA_DEDUPE_STRICT", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        # If strict requested or non-dict message, use full message serialization
+        if strict or not isinstance(message, dict):
+            try:
+                src = orjson.dumps({"queue": queue_name, "message": message})
+            except Exception:
+                src = str((queue_name, message)).encode()
+            return src if isinstance(src, (bytes, bytearray)) else src.encode()
+
+        # Otherwise build a compact canonical payload consisting of the
+        # identifying fields only. This reduces false negatives for similar
+        # jobs that differ only in metadata.
+        core: dict[str, Any] = {}
+        # Only include the explicitly requested identifying fields
+        for key in ("site_name", "user_id", "category"):
+            if key in message:
+                core[key] = message.get(key)
+
+        try:
+            src = orjson.dumps({"queue": queue_name, "core": core})
+        except Exception:
+            src = str((queue_name, core)).encode()
+        return src if isinstance(src, (bytes, bytearray)) else src.encode()
+
     async def publish_message(
         self,
         queue_name: str,
@@ -629,7 +652,6 @@ class RedisQueueBackend:
         suppress: bool = False,
     ) -> bool:
         try:
-            abc = str(message)
             await self.connect()
             assert self._redis is not None
 
@@ -650,15 +672,8 @@ class RedisQueueBackend:
             except Exception:
                 lock_ttl = 30
 
-            # Serialize payload for stable fingerprint and Lua body
-            try:
-                fp_source = orjson.dumps({"queue": queue_name, "message": message})
-            except Exception:
-                fp_source = str((queue_name, message)).encode()
-
-            if isinstance(fp_source, (str,)):
-                fp_source = fp_source.encode()
-
+            # Build fingerprint source (may be compacted by _get_fingerprint_source)
+            fp_source = self._get_fingerprint_source(queue_name, message)
             fingerprint = hashlib.sha1(fp_source).hexdigest()
             dedupe_key = f"{stream_name}:dedupe:{fingerprint}"
 
@@ -902,8 +917,9 @@ class RedisQueueBackend:
                             pass
                         continue
 
-                    message = RedisMessage(pdata, mid)
+                    message = RedisMessage(self, stream_name, pdata, mid)
                     await callback(message, *args)
+                    # Note: reclaimed entries were previously acked; leave to handler to ack
                     fp = pdata.get("_fingerprint")
                     await self._remove_dedupe_if_matches(stream_name, fp, mid)
                 except Exception as e:
@@ -946,21 +962,9 @@ class RedisQueueBackend:
                         )
 
                         try:
-                            message = RedisMessage(data, msg_id_str)
+                            message = RedisMessage(self, stream_name, data, msg_id_str)
                             await callback(message, *args)
-                            await self._redis.xack(
-                                stream_name, self.group_name, msg_id_str
-                            )
-                            await self._redis.xdel(stream_name, msg_id_str)
-                            # Best-effort: remove dedupe key if message carried a fingerprint
-                            fp = (
-                                data.get("_fingerprint")
-                                if isinstance(data, dict)
-                                else None
-                            )
-                            await self._remove_dedupe_if_matches(
-                                stream_name, fp, msg_id_str
-                            )
+                            # Handler should call message.ack() to acknowledge; do not auto-ack here.
                         except Exception as e:
                             self._logger.exception(
                                 "Error processing message %s: %s", msg_id_str, e
@@ -1119,13 +1123,12 @@ class UltimaConsumer:
     ) -> None:
         # Delegate to the manager via public delegator, binding this consumer's name.
         # Calculate a numeric worker_id from the consumer name (e.g. 'worker-3' -> 3)
-        try:
+        new_args = ()
+        if "worker-" in self.consumer_name:
             worker_id = int(self.consumer_name.split("-")[1])
-        except Exception:
-            worker_id = 0
+            # Prepend worker_id so the callback receives it as args[0]
+            new_args = (worker_id,)
 
-        # Prepend worker_id so the callback receives it as args[0]
-        new_args = (worker_id,)
         if args:
             new_args = new_args + tuple(args)
 
@@ -1186,7 +1189,6 @@ class UltimaConsumer:
 __all__ = [
     "UltimaQueue",
     "StandardData",
-    "MandatoryJob",
     "QueueBackend",
     "create_notification",
     "create_message",
