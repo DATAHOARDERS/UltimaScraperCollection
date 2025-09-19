@@ -742,8 +742,18 @@ class DownloadManager:
             return probe["format"][
                 "format_name"
             ]  # Short format name (e.g., 'mp4', 'mov')
-        except ffmpeg.Error as e:
-            raise Exception(f"Error probing file {filepath}: {e.stderr.decode()}")
+        except Exception as e:
+            error_msg = str(e)
+
+            if "moov atom not found" in error_msg or "Invalid data found" in error_msg:
+                # File is corrupted, try to infer from extension
+                extension = filepath.suffix.lower().lstrip(".")
+                if extension in ["mp4", "mov", "m4v", "avi", "mkv", "webm", "flv"]:
+                    return extension if extension != "m4v" else "mp4"
+                return "mp4"  # Default fallback for video files
+            else:
+                # For other ffmpeg errors, re-raise as before
+                raise Exception(f"Error probing file {filepath}: {error_msg}")
 
     def get_preferred_format(self, filepath: Path) -> str:
         """Extract the preferred container format from the file."""
@@ -755,8 +765,20 @@ class DownloadManager:
             formats = format_names.split(",")  # Split into a list
             # Prioritize 'mp4' if available, otherwise take the first format
             return "mp4" if "mp4" in formats else formats[0]
-        except ffmpeg.Error as e:
-            raise Exception(f"Error probing file {filepath}: {e.stderr.decode()}")
+        except Exception as e:
+            # If the file is corrupted or unreadable, try to infer format from extension
+            # or default to mp4 for video files
+            error_msg = str(e)
+
+            if "moov atom not found" in error_msg or "Invalid data found" in error_msg:
+                # File is corrupted, try to infer from extension
+                extension = filepath.suffix.lower().lstrip(".")
+                if extension in ["mp4", "mov", "m4v", "avi", "mkv", "webm", "flv"]:
+                    return extension if extension != "m4v" else "mp4"
+                return "mp4"  # Default fallback for video files
+            else:
+                # For other ffmpeg errors, re-raise as before
+                raise Exception(f"Error probing file {filepath}: {error_msg}")
 
     async def format_media(
         self, output_filepath: Path, decrypted_media_paths: list[Path]

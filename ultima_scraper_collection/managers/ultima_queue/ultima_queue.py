@@ -633,10 +633,25 @@ class RedisQueueBackend:
         # identifying fields only. This reduces false negatives for similar
         # jobs that differ only in metadata.
         core: dict[str, Any] = {}
+        # Normalized user id: accept either 'user_id' or 'performer_id'
+        effective_user_id: Any = None
+        try:
+            if isinstance(message, dict):
+                effective_user_id = (
+                    message.get("user_id")
+                    if message.get("user_id") is not None
+                    else message.get("performer_id")
+                )
+        except Exception:
+            effective_user_id = None
+
         # Only include the explicitly requested identifying fields
-        for key in ("site_name", "user_id", "category"):
-            if key in message:
-                core[key] = message.get(key)
+        if "site_name" in message:
+            core["site_name"] = message.get("site_name")
+        if effective_user_id is not None:
+            core["user_id"] = effective_user_id
+        if "category" in message:
+            core["category"] = message.get("category")
 
         try:
             src = orjson.dumps({"queue": queue_name, "core": core})
@@ -929,8 +944,161 @@ class RedisQueueBackend:
 
         # Main consumer loop: read new messages and process them inline
         read_count = max(1, prefetch_count or 1)
+        reclaim_counter = 0  # Periodic reclaim check
         while True:
             try:
+                # Every 10 iterations, check for additional stale pending messages
+                # and also check for any messages that might have been skipped
+                if reclaim_counter % 10 == 0:
+                    # First, try XAUTOCLAIM for stale pending entries
+                    try:
+                        additional_reclaimed = await self._reclaim_with_xautoclaim(
+                            stream_name, local_consumer, read_count
+                        )
+                        if additional_reclaimed:
+                            for item in additional_reclaimed:
+                                try:
+                                    mid_any = item.get("id")
+                                    if mid_any is None:
+                                        continue
+                                    mid = (
+                                        mid_any
+                                        if isinstance(mid_any, str)
+                                        else str(mid_any)
+                                    )
+                                    pdata = cast(dict[str, Any], item.get("data") or {})
+
+                                    # Check target consumer
+                                    headers = (
+                                        pdata.get("_headers")
+                                        if isinstance(pdata, dict)
+                                        else None
+                                    )
+                                    target = None
+                                    if isinstance(headers, dict):
+                                        target = headers.get("target_consumer")
+
+                                    if target and target != local_consumer:
+                                        # Re-publish for intended consumer
+                                        await self._redis.xadd(
+                                            stream_name, {b"body": orjson.dumps(pdata)}
+                                        )
+                                        try:
+                                            await self._redis.xack(
+                                                stream_name, self.group_name, mid
+                                            )
+                                            await self._redis.xdel(stream_name, mid)
+                                        except Exception:
+                                            pass
+                                        continue
+
+                                    message = RedisMessage(
+                                        self, stream_name, pdata, mid
+                                    )
+                                    await callback(message, *args)
+                                    fp = pdata.get("_fingerprint")
+                                    await self._remove_dedupe_if_matches(
+                                        stream_name, fp, mid
+                                    )
+                                except Exception as e:
+                                    self._logger.exception(
+                                        "Error processing additional reclaimed message %s: %s",
+                                        item.get("id"),
+                                        e,
+                                    )
+                    except Exception as e:
+                        self._logger.debug("Additional reclaim check failed: %s", e)
+
+                    # Second, check for any messages that might have been missed by reading from "0"
+                    try:
+                        missed_resp = await self._redis.xreadgroup(
+                            self.group_name,
+                            local_consumer,
+                            streams={stream_name: "0"},
+                            count=read_count,
+                        )
+                        if missed_resp:
+                            for _stream, messages in missed_resp:
+                                for msg_id, fields in messages:
+                                    fields_map = cast(dict[bytes, bytes], fields)
+                                    body_bytes = fields_map.get(b"body")
+                                    if body_bytes is not None:
+                                        try:
+                                            decoded_payload: Any = orjson.loads(
+                                                body_bytes
+                                            )
+                                        except Exception:
+                                            decoded_payload = None
+                                        if isinstance(decoded_payload, dict):
+                                            data = cast(dict[str, Any], decoded_payload)
+                                        else:
+                                            data = {"body": decoded_payload}
+                                    else:
+                                        data = {}
+
+                                    msg_id_str = (
+                                        msg_id.decode()
+                                        if isinstance(msg_id, (bytes, bytearray))
+                                        else str(msg_id)
+                                    )
+
+                                    try:
+                                        # Check target consumer
+                                        headers = (
+                                            data.get("_headers")
+                                            if isinstance(data, dict)
+                                            else None
+                                        )
+                                        target = None
+                                        if isinstance(headers, dict):
+                                            target = headers.get("target_consumer")
+
+                                        if target and target != local_consumer:
+                                            # Re-publish for intended consumer
+                                            await self._redis.xadd(
+                                                stream_name,
+                                                {b"body": orjson.dumps(data)},
+                                            )
+                                            try:
+                                                await self._redis.xack(
+                                                    stream_name,
+                                                    self.group_name,
+                                                    msg_id_str,
+                                                )
+                                                await self._redis.xdel(
+                                                    stream_name, msg_id_str
+                                                )
+                                            except Exception:
+                                                pass
+                                            continue
+
+                                        message = RedisMessage(
+                                            self, stream_name, data, msg_id_str
+                                        )
+                                        await callback(message, *args)
+                                        await self._redis.xack(
+                                            stream_name, self.group_name, msg_id_str
+                                        )
+                                        await self._redis.xdel(stream_name, msg_id_str)
+                                        fp = (
+                                            data.get("_fingerprint")
+                                            if isinstance(data, dict)
+                                            else None
+                                        )
+                                        await self._remove_dedupe_if_matches(
+                                            stream_name, fp, msg_id_str
+                                        )
+                                    except Exception as e:
+                                        self._logger.exception(
+                                            "Error processing missed message %s: %s",
+                                            msg_id_str,
+                                            e,
+                                        )
+                    except Exception as e:
+                        self._logger.debug("Missed message check failed: %s", e)
+
+                reclaim_counter += 1
+
                 resp = await self._redis.xreadgroup(
                     self.group_name,
                     local_consumer,
@@ -962,6 +1130,41 @@ class RedisQueueBackend:
                         )
 
                         try:
+                            # If a message carries a target_consumer header, ensure only
+                            # the intended consumer processes it. If this consumer is
+                            # not the target, re-publish the message and remove the
+                            # current pending entry to allow the intended consumer to
+                            # receive it later.
+                            headers = (
+                                data.get("_headers") if isinstance(data, dict) else None
+                            )
+                            target = None
+                            if isinstance(headers, dict):
+                                target = headers.get("target_consumer")
+
+                            if target and target != local_consumer:
+                                # Re-publish the payload so it becomes available for the
+                                # intended consumer. Keep headers intact.
+                                try:
+                                    await self._redis.xadd(
+                                        stream_name, {b"body": orjson.dumps(data)}
+                                    )
+                                except Exception:
+                                    # best-effort re-publish; continue to ack/del original
+                                    pass
+
+                                # Remove the current reclaimed/pending entry so other
+                                # consumers won't keep seeing it.
+                                try:
+                                    await self._redis.xack(
+                                        stream_name, self.group_name, msg_id_str
+                                    )
+                                    await self._redis.xdel(stream_name, msg_id_str)
+                                except Exception:
+                                    pass
+                                # Skip processing on this consumer
+                                continue
+
                             message = RedisMessage(self, stream_name, data, msg_id_str)
                             await callback(message, *args)
                             # Handler should call message.ack() to acknowledge; do not auto-ack here.
